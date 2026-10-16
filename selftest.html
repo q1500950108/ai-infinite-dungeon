@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head><meta charset="UTF-8"><title>向导自检</title>
+<style>
+  html,body{margin:0;height:100%;background:#0f0f16;color:#e8e8f0;font:12.5px/1.75 ui-monospace,Consolas,monospace}
+  iframe{position:fixed;right:0;top:0;width:820px;height:100%;border:0;border-left:1px solid #333}
+  #log{position:fixed;left:0;top:0;width:calc(100% - 820px);height:100%;overflow:auto;padding:12px 16px;box-sizing:border-box}
+  .ok{color:#5ee08a}.bad{color:#ff6b81}.dim{color:#8a8aa0}.warn{color:#ffc93c}
+</style>
+</head>
+<body>
+<div id="log"></div>
+<iframe id="f" src="./index.html"></iframe>
+<script>
+const out = document.getElementById('log');
+const line = (t, cls) => { const d = document.createElement('div'); if (cls) d.className = cls; d.textContent = t; out.appendChild(d); out.scrollTop = out.scrollHeight; };
+const wait = ms => new Promise(r => setTimeout(r, ms));
+
+document.getElementById('f').onload = async () => {
+  const w = document.getElementById('f').contentWindow;
+  const errors = [];
+  w.addEventListener('error', e => errors.push('window.onerror: ' + (e.message || e.error)));
+  const origErr = w.console.error;
+  w.console.error = (...a) => { errors.push('console.error: ' + a.join(' ')); origErr.apply(w.console, a); };
+
+  await wait(2500);
+  let pass = 0, fail = 0;
+  const chk = (cond, msg) => { if (cond) { pass++; line('  ✓ ' + msg, 'ok'); } else { fail++; line('  ✗ ' + msg, 'bad'); } };
+  const ov = () => w.document.querySelector('.overlay');
+  const stepName = () => ov()?.querySelector('.wz-step.on')?.textContent?.trim() || '?';
+
+  try {
+    w.UI.hideLanding();
+    w.UI.openNewSave();
+    await wait(400);
+    line('【建号向导】走一遍', 'dim');
+
+    // 第 0 步：网站模式且没配接口时会停在这里（完整模式则因为服务器已配好而放行）
+    if (w.UI._wizard.step === 0) {
+      chk(/接上 AI/.test(stepName()), '第 0 步是「接上 AI」');
+      chk(Boolean(ov().querySelector('#wzApiGo')), '第 0 步有「保存并继续 / 开始建号」');
+      ov().querySelector('#wzApiGo').click();
+      await wait(1200);
+      chk(w.UI._wizard.step === 1, `第 0 步之后进到「${stepName()}」`);
+    } else {
+      chk(true, `没配接口的必要（${w.Backend.mode === 'server' ? '完整模式，服务器已配好' : '接口已配好'}），直接进「${stepName()}」`);
+    }
+
+    const wz = w.UI._wizard;
+    // 填好每一步需要的数据，然后**只靠点按钮**前进，验证渲染与事件
+    wz.name = '阿潜'; wz.gender = '女';
+    wz.originId = w.GAME_DATA.origins[0].id;
+    wz.talentMode = 'manual';
+    wz.talentId = w.GAME_DATA.talents[0].id;
+    const pts = (w.GAME_DATA.difficulties.find(x => x.id === wz.difficulty) || {}).points || 8;
+    wz.attrs = { con: 5, agi: 5, int: 5, wil: 5, cha: 5, luk: 5 };
+    for (let i = 0; i < pts; i++) wz.attrs[['con', 'agi', 'int', 'wil', 'cha', 'luk'][i % 6]]++;
+    w.UI.wzRender();
+    await wait(250);
+
+    for (let i = 0; i < 5; i++) {
+      const name = stepName();
+      const next = ov().querySelector('#wzNext');
+      const done = ov().querySelector('#wzDone');
+      if (done) { chk(true, `第 ${i + 1} 步「${name}」→ 出现「进入灰雾」`); break; }
+      if (!next) { chk(false, `第 ${i + 1} 步「${name}」找不到下一步按钮`); break; }
+      if (next.disabled) { chk(false, `第 ${i + 1} 步「${name}」下一步是禁用的`); break; }
+      next.click();
+      await wait(320);
+      chk(stepName() !== name, `第 ${i + 1} 步「${name}」→「${stepName()}」`);
+    }
+
+    // 确认页内容
+    const t = ov()?.textContent || '';
+    chk(/阿潜/.test(t), '确认页显示姓名');
+    chk(/女/.test(t), '确认页显示性别');
+    chk(/开局时间/.test(t), '确认页显示开局时间（不再有「起始世界」）');
+    chk(!/起始世界/.test(t), '确认页没有残留的「起始世界」');
+    chk(/第 7 天/.test(t) || /现实生活/.test(t), '确认页说明了每周任务节奏');
+
+    // 回退也要能用
+    ov().querySelector('#wzBack')?.click();
+    await wait(300);
+    chk(stepName() !== '确认', '「上一步」能回退 → ' + stepName());
+
+    // 数据包齐不齐（静态托管最容易漏文件）
+    line('', 'dim');
+    line('【数据包】', 'dim');
+    const nBooks = (w.GAME_WORLDBOOKS || []).length;
+    chk(Boolean(w.GAME_DATA), 'gamedata.js 加载了');
+    chk(nBooks >= 80, `worldbooks.js 加载了 ${nBooks} 篇世界书`);
+    chk(Boolean(w.GAME_DATA?.build), '带了构建指纹：' + (w.GAME_DATA?.build || '无'));
+
+    line('', 'dim');
+    if (errors.length) { line('捕获到的运行时错误：', 'bad'); errors.forEach(e => line('  ' + e, 'bad')); fail += errors.length; }
+    else { line('✓ 没有捕获到任何运行时错误', 'ok'); pass++; }
+
+    line(`\n结果：${pass} 通过 / ${fail} 失败`, fail ? 'bad' : 'ok');
+    document.title = fail ? 'ERR' : 'ALL-OK';
+  } catch (e) {
+    line('异常：' + e.message, 'bad');
+    document.title = 'ERR';
+  }
+};
+</script>
+</body>
+</html>

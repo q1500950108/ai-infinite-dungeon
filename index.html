@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="theme-color" content="#0a0a10" />
+<title>都市无限流：主神空间</title>
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><circle cx='16' cy='16' r='13' fill='%237c5cff'/></svg>" />
+<link rel="stylesheet" href="./style.css" />
+</head>
+<body>
+
+<div id="app">
+  <!-- ══════════ 开始页 ══════════ -->
+  <div class="landing" id="landing">
+    <button class="ld-close" id="ldClose" title="关闭">✕</button>
+
+    <!-- 右侧功能菜单 -->
+    <aside class="ld-menu">
+      <div class="ld-menu-h">功能</div>
+      <button class="ld-mi" data-ld="settings"><i>⚙️</i><span>全局设置</span></button>
+      <button class="ld-mi" data-ld="api"><i>🔑</i><span>API 管理</span></button>
+      <button class="ld-mi" data-ld="prompt"><i>📜</i><span>提示词管理</span></button>
+      <button class="ld-mi" data-ld="worlds"><i>📚</i><span>世界图鉴</span></button>
+      <button class="ld-mi" data-ld="codex"><i>📇</i><span>人物名录</span></button>
+      <button class="ld-mi" data-ld="shop"><i>🛒</i><span>主神商店</span></button>
+      <div class="ld-menu-gap"></div>
+      <button class="ld-mi" data-ld="fullscreen"><i>⛶</i><span>进入全屏</span></button>
+      <button class="ld-mi" data-ld="guide"><i>📖</i><span>玩法说明</span></button>
+      <button class="ld-mi" data-ld="saves"><i>📂</i><span>存档管理</span></button>
+    </aside>
+
+    <div class="landing-inner">
+      <div class="ld-card">
+        <div class="ld-brand">
+          <div class="ld-title">都市无限流</div>
+          <h1 class="ld-name">主神空间</h1>
+          <p class="ld-tag">城市表面平静，暗面藏着无数世界。<br />被主神选中的人只有两个结局：活着回来，或者别回来。</p>
+        </div>
+
+        <div class="ld-divider"><span>运 行 模 式</span></div>
+
+        <div class="ld-modes">
+          <button class="ld-mode" id="modeServer">
+            <span class="ld-mo-top"><i>🗄️</i><b>完整模式</b><em id="badgeServer">检测中</em></span>
+            <span class="ld-mo-desc">本地服务器 · 存档在 <code>saves/</code> · 支持重塑与回退 · 手机同 Wi-Fi 可访问</span>
+          </button>
+          <button class="ld-mode" id="modeLocal">
+            <span class="ld-mo-top"><i>🌐</i><b>网页模式</b><em id="badgeLocal">检测中</em></span>
+            <span class="ld-mo-desc">免安装 · 存档存在浏览器里 · 纯静态托管就能跑 · <b>不支持重塑与回退</b></span>
+          </button>
+        </div>
+
+        <div class="ld-acts">
+          <button class="ld-btn primary" id="ldStart">开 始 旅 途</button>
+          <button class="ld-btn" id="ldContinue">继 续 旅 途</button>
+        </div>
+
+        <div class="ld-foot" id="landingEngine"></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ══════════ 左侧图标栏 ══════════ -->
+  <nav class="rail" id="rail">
+    <div class="rail-group">
+      <button class="rail-btn" data-act="char"><i>👤</i><span>角色</span></button>
+      <button class="rail-btn" data-act="inv"><i>🎒</i><span>背包</span></button>
+      <button class="rail-btn" data-act="shop"><i>🛒</i><span>商店</span></button>
+      <button class="rail-btn" data-act="quest"><i>📋</i><span>任务</span></button>
+      <button class="rail-btn" data-act="codex"><i>📇</i><span>人物</span></button>
+      <button class="rail-btn" data-act="worlds"><i>📚</i><span>世界</span></button>
+      <button class="rail-btn" data-act="archive"><i>📖</i><span>档案</span></button>
+      <button class="rail-btn" data-act="time"><i>⏩</i><span>时间</span></button>
+      <button class="rail-btn" data-act="hub"><i>🌀</i><span>主神空间</span></button>
+    </div>
+    <div class="rail-gap"></div>
+    <div class="rail-group">
+      <button class="rail-btn" data-act="rest"><i>💤</i><span>恢复</span></button>
+      <button class="rail-btn" data-act="prompt"><i>📜</i><span>提示词</span></button>
+      <button class="rail-btn" data-act="cfg"><i>⚙️</i><span>设置</span></button>
+      <button class="rail-btn" data-act="home"><i>🏠</i><span>开始页</span></button>
+    </div>
+  </nav>
+
+  <!-- ══════════ 侧栏 ══════════ -->
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <div class="orb"></div>
+      <div>
+        <h1 id="brandTitle">主神空间</h1>
+        <div class="sub">都市无限流 · 文字冒险</div>
+      </div>
+      <button class="side-fold" id="sideFold" title="收起状态栏">收起 ⟩</button>
+    </div>
+
+    <div class="section">
+      <h2>角色状态 <span class="mini" id="saveNameLabel">未存档</span></h2>
+
+      <div class="stat hp">
+        <div class="row"><span class="label">HP 生命</span><span class="val" id="hpVal">100 / 100</span></div>
+        <div class="track"><div class="fill hp" id="hpBar" style="width:100%"></div></div>
+      </div>
+      <div class="stat sta">
+        <div class="row"><span class="label">体力</span><span class="val" id="staVal">100 / 100</span></div>
+        <div class="track"><div class="fill sta" id="staBar" style="width:100%"></div></div>
+      </div>
+      <div class="stat score">
+        <div class="row"><span class="label">积分</span><span class="val" id="scoreVal">100</span></div>
+        <div class="track"><div class="fill score" id="scoreBar" style="width:20%"></div></div>
+      </div>
+
+      <div class="attr-mini-list" id="attrList"></div>
+
+      <dl class="meta-grid">
+        <dt>等级</dt><dd id="rankVal"><span class="tag rank">E</span></dd>
+        <dt>现金</dt><dd id="moneyVal">¥3,000</dd>
+        <dt>出身</dt><dd id="originVal">—</dd>
+        <dt>天赋</dt><dd id="talentVal">—</dd>
+        <dt>战斗</dt><dd id="combatVal">攻 0 · 防 0</dd>
+      </dl>
+    </div>
+
+    <div class="section">
+      <h2>背包 <span class="mini" id="invCount"></span></h2>
+      <div class="chips" id="invList"><span class="empty">空空如也</span></div>
+    </div>
+
+    <div class="section">
+      <h2>技能与血统</h2>
+      <div class="chips" id="skillList"><span class="empty">尚未觉醒任何能力</span></div>
+    </div>
+
+    <div class="section" style="border-bottom:none">
+      <h2>存档 <span class="mini" id="syncHint"></span></h2>
+      <button class="btn ghost tiny block" style="margin-bottom:8px" onclick="UI.openNewSave()">＋ 新建旅途</button>
+      <div class="save-list" id="saveList"></div>
+      <button class="btn ghost tiny block" style="margin-top:8px" onclick="UI.openArchive()">📖 记忆档案</button>
+      <button class="btn ghost tiny block" style="margin-top:6px" onclick="UI.exportText('novel',null,'小说已导出')">⬇ 导出为小说 TXT</button>
+      <button class="btn ghost tiny block" style="margin-top:6px" onclick="UI.exportText('dossier',null,'完整档案已导出')">⬇ 导出全部档案 TXT</button>
+      <button class="btn danger tiny block" style="margin-top:6px" onclick="UI.openImport()">📥 导入存档</button>
+    </div>
+  </aside>
+  <div class="backdrop" id="backdrop" onclick="UI.toggleSidebar(false)"></div>
+  <button class="side-reopen" id="sideReopen" title="展开状态栏">⟨ 状态</button>
+
+  <!-- ══════════ 主区 ══════════ -->
+  <div class="main">
+    <div class="topbar">
+      <button class="btn ghost tiny mobile-only" onclick="UI.toggleSidebar(true)">☰</button>
+      <span class="title" id="topTitle">都市无限流：主神空间</span>
+      <!-- 顶部时间与阶段：一眼能看到现在第几天、离任务还有多久 -->
+      <span class="topclock" id="topClock">
+        <span class="tc-time" id="topClockTime">26年1月1日 06:00</span>
+        <span class="tc-phase" id="topClockPhase">现实生活</span>
+        <span class="tc-cd" id="topClockCd">还有 7 天</span>
+      </span>
+      <div class="spacer"></div>
+      <!-- 当前任务徽章：点了开任务面板。侧栏那块删掉之后，任务还得一眼看得到 -->
+      <button class="taskchip" id="topTask" onclick="UI.openQuests()" style="display:none">
+        <span class="tc-flag">📋</span>
+        <span id="topTaskName">—</span>
+        <span class="tc-rank" id="topTaskRank"></span>
+      </button>
+      <!-- 重塑 / 回退常驻顶部：放在消息下面会因为流式追加而根本不渲染出来。
+           没有可退的轮次时，「回退」会变成「🏠 主页」—— 顶栏得有个回开始页的入口 -->
+      <span class="topacts">
+        <button class="tool" id="btnReroll" title="用同样的输入重新生成这一轮">↻ 重塑</button>
+        <button class="tool" id="btnUndo" title="删掉这一轮，回到这一轮开头">↩ 回退</button>
+      </span>
+      <span class="engine-badge" id="engineBadge" onclick="UI.openSettings()">
+        <span class="status-dot" id="statusDot"></span>
+        <span id="engineText">检测中…</span>
+      </span>
+    </div>
+
+    <div class="chat" id="chat">
+      <div class="chat-inner" id="chatInner"></div>
+    </div>
+
+    <div class="composer">
+      <div class="composer-inner">
+        <div class="input-wrap">
+          <textarea id="input" rows="1" placeholder="输入你的行动……也可以直接点上面的选项"></textarea>
+          <button class="btn" id="sendBtn" onclick="Game.send()">发送</button>
+        </div>
+        <div class="hint-row">
+          <span><span class="k">Enter</span> 发送</span>
+          <span><span class="k">Shift+Enter</span> 换行</span>
+          <span><span class="k">↑</span> 取回上次输入</span>
+          <span style="margin-left:auto" id="turnHint"></span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+
+<div id="modalRoot"></div>
+<div id="toastRoot" style="position:fixed;top:16px;left:50%;transform:translateX(-50%);z-index:200;display:flex;flex-direction:column;gap:8px;align-items:center;pointer-events:none"></div>
+
+<script src="./prefs.js"></script>
+<script src="./gamedata.js"></script>
+<!-- 世界书（84 篇，385KB）：网页模式靠它注入原著设定与人物，必须在 app.js 之前 -->
+<script src="./worldbooks.js"></script>
+<script src="./app.js"></script>
+<script src="./panels.js"></script>
+</body>
+</html>
