@@ -105,14 +105,8 @@ async function loadGameData() {
   for (const k of ['origins', 'talents', 'attrs', 'equipment', 'equipSlots']) {
     if (d[k] && !Array.isArray(d[k])) d[k] = Object.values(d[k]);
   }
-  // 世界书（网页模式注入提示词用）。index.html 已经直接引了，这里只是兜底补加载。
-  if (!window.GAME_WORLDBOOKS) {
-    try { await loadScriptOnce('./worldbooks.js', 'GAME_WORLDBOOKS'); } catch { /* 没有就算了 */ }
-  }
-  if (!window.GAME_WORLDBOOKS) {
-    console.warn('worldbooks.js 缺失 —— 网页模式不会注入世界书，AI 会照着任务名瞎编。'
-      + '静态托管时记得把它一起上传（用 start.bat 启动服务器会自动生成）。');
-  }
+  // 世界书在后台慢慢拉（不阻塞首页渲染）；真正要用的时候 turnLocal 会 await 它
+  ensureWorldBooks();
   return d;
 }
 
@@ -862,6 +856,8 @@ const Backend = {
       return { state: j.state, msg: j.msg || '' };
     }
     // 纯前端模式：本地复刻一份
+    // 纯前端模式：depart 之前先把世界书拉好，这样 seedCanonNpcs 才有的可种
+    if (this.mode !== 'server' && action === 'depart') await ensureWorldBooks();
     let msg = '';
     if (action === 'leave') {
       state.phase = 'life';
@@ -1091,8 +1087,36 @@ window.resolveTalent = resolveTalent;
 /* ═══════════════ 世界书（网页模式也要注入） ═══════════════
    以前纯前端模式**完全没有世界书** —— AI 不知道原著设定和人物，
    只会照着任务名瞎编（「未命名站务员」「神秘人」这种）。
-   数据由 server.mjs 生成到 public/worldbooks.js（385KB，和 gamedata.js 一个量级）。
-   下面两个函数和 lib/rules.mjs 的 worldBookByWork / worldBookBlock 保持同一套规则。 */
+   数据由 server.mjs 生成到 public/worldbooks.js（856KB）。
+
+   ⚠ **按需加载**：856KB 挂在 index.html 里同步加载的话，GitHub Pages 上要下 4~11 秒，
+   首页会白屏。所以第一次真正需要世界书时（进任务世界 / 开局注入提示词）才拉，
+   拿过一次就缓存住。下面这些函数和 lib/rules.mjs 的
+   worldBookByWork / worldBookBlock 保持同一套规则。 */
+
+let _booksLoading = null;
+/** 按需把世界书拉进来（幂等，重复调用共用同一个 promise） */
+function ensureWorldBooks() {
+  if (Array.isArray(window.GAME_WORLDBOOKS) && window.GAME_WORLDBOOKS.length) {
+    return Promise.resolve(window.GAME_WORLDBOOKS);
+  }
+  if (!_booksLoading) {
+    _booksLoading = loadScriptOnce('./worldbooks.js', 'GAME_WORLDBOOKS')
+      .then(() => {
+        const n = (window.GAME_WORLDBOOKS || []).length;
+        if (!n) console.warn('worldbooks.js 里没有世界书数据');
+        return window.GAME_WORLDBOOKS || [];
+      })
+      .catch(() => {
+        _booksLoading = null;   // 失败允许下次重试
+        console.warn('worldbooks.js 加载失败 —— 本轮不会注入世界书。'
+          + '静态托管时记得把它一起上传（用 start.bat 启动服务器会自动生成）。');
+        return [];
+      });
+  }
+  return _booksLoading;
+}
+window.ensureWorldBooks = ensureWorldBooks;
 
 function localWorldBooks() {
   return Array.isArray(window.GAME_WORLDBOOKS) ? window.GAME_WORLDBOOKS : [];
@@ -1836,6 +1860,8 @@ const Game = {
     }
 
     // 提示词按服务端 buildMessages 的顺序拼：阶段 → 能力说明 → 面板 → 风格 → 大纲 → 世界书…
+    // 世界书是按需加载的，这里先确保拿到（第一次会稍微等一下，之后走缓存）
+    if (this.state.mission) await ensureWorldBooks();
     const bookTier = (this.state.mission?.turnsSeen || 0) <= 1 ? 'full' : 'entry';
     const ctx = [localPhasePrompt(this.state), localOutlinePrompt(this.state),
     localWorldProgressPrompt(this.state), localCharacterPrompt(this.state), localStateBlock(this.state)];

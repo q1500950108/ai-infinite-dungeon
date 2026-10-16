@@ -200,8 +200,11 @@
 
 <script src="./prefs.js"></script>
 <script src="./gamedata.js"></script>
-<!-- 世界书（84 篇，385KB）：网页模式靠它注入原著设定与人物，必须在 app.js 之前 -->
-<script src="./worldbooks.js"></script>
+<!--
+  世界书（84 篇 / 856KB）**不在这里同步加载** —— GitHub Pages 上要下 4~11 秒，
+  会把首页堵成白屏。改成 app.js 里按需动态加载（第一次进任务世界时才拉）。
+  加载入口：ensureWorldBooks()（见 app.js）
+-->
 <script src="./app.js"></script>
 <script src="./panels.js"></script>
 </body>
