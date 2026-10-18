@@ -9,6 +9,21 @@
 <link rel="stylesheet" href="./style.css" />
 </head>
 <body>
+<script>
+/* 首次访问（这个浏览器里没有任何存档）：在 app.js 下载完之前就把开始页显示出来。
+   页面底下要加载 gamedata.js(331KB) + app.js(200KB) + panels.js(127KB)，
+   在手机网络下那几秒是一片空白 —— 开始页的内容本来就写死在这个文件里，
+   没必要等脚本。给 <html> 加一个 no-save，样式表里对应地把开始页放出来。
+   有存档的玩家不受影响（boot 会直接进游戏，也不会先闪一下开始页）。 */
+(function () {
+  try {
+    var n = Object.keys(JSON.parse(localStorage.getItem('mid_saves_v1') || '{}')).length;
+    if (!n) document.documentElement.classList.add('no-save');
+  } catch (e) {
+    document.documentElement.classList.add('no-save');
+  }
+})();
+</script>
 
 <div id="app">
   <!-- ══════════ 开始页 ══════════ -->

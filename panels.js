@@ -255,6 +255,8 @@ UI.hideLanding = function () {
   const el = document.getElementById('landing');
   if (el) el.classList.remove('show');
   document.body.classList.remove('landing-open');
+  // 摘掉「首次访问」的兜底显示（那是 index.html 内联脚本加的，见 style.css 的 html.no-save）
+  document.documentElement.classList.remove('no-save');
 };
 
 /* ══════════════════════════════════════════════════════════════════════
