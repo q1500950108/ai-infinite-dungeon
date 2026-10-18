@@ -20,9 +20,31 @@ UI.setPref = (k, v, live) => {
 
 const D = () => window.GAME_DATA || null;
 
+/* ── 侧栏背包的展开 / 收起 ──
+   背包一多（实测 30+ 件）会把整个侧栏撑满，把「技能」「存档」全挤到看不见。
+   所以默认收起，只留标题和件数；状态记在本地，玩家展开过就保持展开。 */
+const INV_COLLAPSE_KEY = 'mid_inv_collapsed_v1';
+UI.invCollapsed = () => {
+  try { return localStorage.getItem(INV_COLLAPSE_KEY) !== '0'; }
+  catch { return true; }                      // 隐私模式：默认收起
+};
+UI.applyInvCollapse = () => {
+  const el = document.getElementById('invList');
+  if (!el) return;
+  const want = UI.invCollapsed();
+  el.classList.toggle('collapsed', want);
+  const c = document.getElementById('invCaret');
+  if (c) c.textContent = want ? '▸' : '▾';
+};
+UI.toggleInv = force => {
+  const want = typeof force === 'boolean' ? force : !UI.invCollapsed();
+  try { localStorage.setItem(INV_COLLAPSE_KEY, want ? '1' : '0'); } catch { /* 隐私模式 */ }
+  UI.applyInvCollapse();
+};
+
 const RARITY = id => (D()?.rarities?.[id]) || { name: '普通', color: '#9aa0b5', order: 0 };
 const SLOTNAME = {
-  weapon: '武器', offhand: '副手', armor: '护甲', accessory: '饰品',
+  head: '头部', weapon: '武器', offhand: '副手', armor: '护甲', accessory: '饰品',
   consumable: '消耗品', skill: '技能', bloodline: '血统',
 };
 const ATTR_META = () => D()?.attrs || [];
@@ -294,8 +316,24 @@ UI.wzApiStep = function () {
       <div class="desc">按接口要求填；不需要就留空。存在这个浏览器的 localStorage 里，不会上传。</div>
       <div id="wzApiTest" style="margin-top:10px"></div>`;
 
-  // ── 完整模式 + 服务器已经配好：默认什么都不用做，但允许用自己的 Key ──
-  if (isServer && serverReady && !usingOwn) {
+  // ── 完整模式 + 服务器已经配好，而且浏览器里没存过自己的 Key：什么都不用做 ──
+  // ⚠ 以前这里只在 !usingOwn 时才给「用我自己的 API Key」的入口；
+  //   反过来（已经填过自己的 Key）却**没有任何切回服务器的按钮** —— 于是只要那把 Key
+  //   是错的/过期的，玩家就被永久困在 401 上，怎么点都出不来。所以两边都要给开关。
+  if (isServer && serverReady) {
+    if (usingOwn) {
+      return `
+      <div class="field" id="wzServerBox">
+        <label>接口</label>
+        <div class="result info" style="margin-bottom:10px">
+          你现在用的是<b>自己填的接口</b>：<code>${esc(c.providerLabel || c.provider || '')}</code>${c.model ? ` · <code>${esc(c.model)}</code>` : ''}
+          ${c.apiKey ? `<br>Key：<code>${esc(String(c.apiKey).slice(0, 10))}…${esc(String(c.apiKey).slice(-4))}</code>` : ''}
+          <br><span class="desc">如果一直报「无效的令牌 / 401」，多半是这把 Key 不对。</span>
+        </div>
+        <button class="btn ghost" id="wzUseServer">↩ 改回用这台服务器配好的接口（推荐）</button>
+      </div>
+      <div id="wzOwnBox">${form}</div>`;
+    }
     return `
       <div class="field" id="wzServerBox">
         <label>接口</label>
@@ -883,6 +921,15 @@ UI.wzRender = function () {
     if (go) go.textContent = '保存并继续 →';
   };
 
+  // 「改回用这台服务器配好的接口」——清掉这个浏览器里存的那份（含那把可能是错的 Key）
+  const useServer = ov.querySelector('#wzUseServer');
+  if (useServer) useServer.onclick = async () => {
+    try { localStorage.removeItem('mid_guest_api_v1'); } catch { /* 隐私模式 */ }
+    await Backend.getConfig();
+    toast('已改回用服务器配好的接口', 'ok');
+    UI.openNewSave();   // 重画这一步
+  };
+
   const done = ov.querySelector('#wzDone');
   if (done) done.onclick = async () => {
     done.disabled = true; done.textContent = '正在拉入灰雾…';
@@ -1073,8 +1120,8 @@ function shopState(it, s) {
   const nerfed = nerfedList.find(x => x.id === `${it.id}__nerfed`);
   // 装备类：已经穿在身上的话，买之前告诉玩家会替换掉什么
   let replaceId = null;
-  if (['weapon', 'offhand', 'armor', 'accessory'].includes(it.slot)) {
-    const slots = it.slot === 'accessory' ? ['accessory1', 'accessory2'] : [it.slot];
+  if (Boolean(SLOT_ACCEPTS()[it.slot])) {
+    const slots = slotsForSlot(it.slot);
     replaceId = slots.map(x => s.equipment?.[x]).find(Boolean) || null;
   }
   const canUpgrade = Boolean(nerfed) && !ownFull;
@@ -1330,7 +1377,7 @@ UI.openInventory = function () {
   if (!s || !d) return;
   const inv = s.inventory || [];
   const equippedIds = new Set(Object.values(s.equipment || {}).filter(Boolean));
-  const SLOT_CN = { weapon: '主武器', offhand: '副手', armor: '护甲', accessory: '饰品', consumable: '消耗品' };
+  const SLOT_CN = { head: '头部', weapon: '主武器', offhand: '副手', armor: '护甲', accessory: '饰品', consumable: '消耗品' };
   const findAny = id => d.equipment.find(x => x.id === id) || inv.find(x => x.id === id);
 
   // 当前装备的合计加成 —— 之前要自己一件件加，现在直接给总数
@@ -1345,24 +1392,59 @@ UI.openInventory = function () {
     .map(([k, v]) => `<span>${STAT_CN[k] || k} <b>${v > 0 ? '+' : ''}${v}</b></span>`).join('');
   const equippedCount = (d.equipSlots || []).filter(x => s.equipment?.[x]).length;
 
-  // 背包排序：能穿的排前面（玩家九成时间是来找装备的），同类别里按稀有度降序
+  // ── 把背包分成两组 ──
+  // 「装备」页只放**能穿上的**；「背包」页放消耗品、食物、剧情道具这类**能用的**。
+  // 以前全混在一起：想找一只能吃的药，得先翻过十几把刀枪剑戟。
   const RAR_ORDER = { common: 0, fine: 1, rare: 2, epic: 3, legend: 4, myth: 5 };
-  const sortedInv = [...inv].sort((a, b) => {
-    const sa = findAny(a.id)?.slot || a.slot;
-    const sb = findAny(b.id)?.slot || b.slot;
-    const ea = ['weapon', 'offhand', 'armor', 'accessory'].includes(sa) ? 0 : 1;
-    const eb = ['weapon', 'offhand', 'armor', 'accessory'].includes(sb) ? 0 : 1;
-    if (ea !== eb) return ea - eb;
+  const slotOf = it => findAny(it.id)?.slot || it.slot || '';
+  const isEquippable = it => Boolean(SLOT_ACCEPTS()[slotOf(it)]);
+  const usableOf = it => {
+    const eff = it.effect || findAny(it.id)?.effect;
+    return Boolean(eff) && Boolean(eff.hp || eff.sta || eff.score || eff.permanent);
+  };
+  const byRarity = (a, b) => {
     const ra = RAR_ORDER[a.rarity || findAny(a.id)?.rarity] ?? 0;
     const rb = RAR_ORDER[b.rarity || findAny(b.id)?.rarity] ?? 0;
     if (ra !== rb) return rb - ra;
     return String(a.name).localeCompare(String(b.name), 'zh');
-  });
+  };
+  const equipables = [...inv].filter(isEquippable).sort(byRarity);
+  const bagItems = [...inv].filter(it => !isEquippable(it)).sort(byRarity);
+
+  // 一行物品（装备页和背包页共用）
+  const itemRow = it => {
+    const def = d.equipment.find(x => x.id === it.id);
+    const slot = def?.slot || it.slot;
+    const equippable = Boolean(SLOT_ACCEPTS()[slot]);
+    const stats = it.stats && Object.keys(it.stats).length ? it.stats : (def?.stats || {});
+    const rarity = it.rarity || def?.rarity || 'common';
+    const usable = usableOf(it);
+    const eqName = { head: '头部', weapon: '主武器', offhand: '副手', armor: '护甲', accessory: '饰品', consumable: '消耗品' }[slot] || '';
+    return `<div class="inv-row" style="--rc:${RARITY(rarity).color}">
+            <div class="ir-main">
+              <div class="ir-nm">${rarTag(rarity)}<b>${esc(it.name)}</b>${it.qty > 1 ? `<span class="q">×${it.qty}</span>` : ''}${equippedIds.has(it.id) ? '<span class="eq">已装备</span>' : ''}${it.source === 'story' ? '<span class="q" title="剧情里得到的">剧情</span>' : ''}</div>
+              <div class="ir-ds">${esc(it.desc || def?.desc || '')}${eqName && equippable ? `<span class="ir-slot">${eqName}</span>` : ''}</div>
+              ${Object.keys(stats).length ? `<div class="st-row">${statLine(stats)}</div>` : ''}
+              ${it.perk || def?.perk ? `<div class="ir-pk">▸ ${esc(it.perk || def?.perk)}</div>` : ''}
+            </div>
+            <div class="ir-act">
+              ${equippable ? `<button class="btn tiny" data-equip="${it.id}">${equippedIds.has(it.id) ? '卸下' : '装备'}</button>` : ''}
+              ${usable ? `<button class="btn ghost tiny" data-use="${it.id}">使用</button>` : ''}
+              ${def ? `<button class="btn ghost tiny" data-sell="${it.id}">卖 ${price(Math.floor(def.cost / 2))}</button>` : ''}
+            </div>
+          </div>`;
+  };
 
   UI.openModal({
-    title: '背包与装备',
+    title: '装备与背包',
     wide: true,
     body: `
+      <div class="inv-tabs">
+        <button class="tab on" data-itab="equip">🛡 装备 <span class="mini">${equippedCount}/${(d.equipSlots || []).length}</span></button>
+        <button class="tab" data-itab="bag">🎒 背包 <span class="mini">${bagItems.length}</span></button>
+      </div>
+
+      <div class="itab-pane" data-pane="equip">
       <div class="field"><label>已装备 <span class="mini">${equippedCount} / ${(d.equipSlots || []).length}</span></label>
         <div class="equip-grid">
           ${(d.equipSlots || []).map(slot => {
@@ -1379,39 +1461,41 @@ UI.openInventory = function () {
         : '<div class="equip-total empty"><span class="et-lb">合计加成</span><span>身上什么都没穿，全靠肉身</span></div>'}
       </div>
 
-      <div class="field"><label>背包 <span class="mini">${inv.length} 件</span></label>
-        ${inv.length ? `<div class="inv-list">
-          ${sortedInv.map(it => {
-      const def = d.equipment.find(x => x.id === it.id);
-      // ⚠ 剧情道具不在装备库里，def 会是 undefined。以前这里只认 def，
-      // 结果 AI 在剧情里给的刀剑根本没有「装备」按钮 —— 卸下之后就再也装不回去了。
-      // 所以栏位优先看库里的定义，其次看道具自己身上的 slot。
-      const slot = def?.slot || it.slot;
-      const equippable = ['weapon', 'offhand', 'armor', 'accessory'].includes(slot);
-      const stats = it.stats && Object.keys(it.stats).length ? it.stats : (def?.stats || {});
-      const rarity = it.rarity || def?.rarity || 'common';
-      const usable = (def?.effect || it.effect)
-        && ((def?.effect || it.effect).hp || (def?.effect || it.effect).sta
-          || (def?.effect || it.effect).score || (def?.effect || it.effect).permanent);
-      const eqName = { weapon: '主武器', offhand: '副手', armor: '护甲', accessory: '饰品', consumable: '消耗品' }[slot] || '';
-      return `<div class="inv-row" style="--rc:${RARITY(rarity).color}">
-              <div class="ir-main">
-                <div class="ir-nm">${rarTag(rarity)}<b>${esc(it.name)}</b>${it.qty > 1 ? `<span class="q">×${it.qty}</span>` : ''}${equippedIds.has(it.id) ? '<span class="eq">已装备</span>' : ''}${it.source === 'story' ? '<span class="q" title="剧情里得到的">剧情</span>' : ''}</div>
-                <div class="ir-ds">${esc(it.desc || def?.desc || '')}${eqName && equippable ? `<span class="ir-slot">${eqName}</span>` : ''}</div>
-                ${Object.keys(stats).length ? `<div class="st-row">${statLine(stats)}</div>` : ''}
-                ${it.perk || def?.perk ? `<div class="ir-pk">▸ ${esc(it.perk || def?.perk)}</div>` : ''}
-              </div>
-              <div class="ir-act">
-                ${equippable ? `<button class="btn tiny" data-equip="${it.id}">${equippedIds.has(it.id) ? '卸下' : '装备'}</button>` : ''}
-                ${usable ? `<button class="btn ghost tiny" data-use="${it.id}">使用</button>` : ''}
-                ${def ? `<button class="btn ghost tiny" data-sell="${it.id}">卖 ${price(Math.floor(def.cost / 2))}</button>` : ''}
-              </div>
-            </div>`;
-    }).join('')}
-        </div>` : '<div class="empty">背包是空的。任务里拿到的东西会自动进来。</div>'}
+      <div class="field"><label>背包里能换上的 <span class="mini">${equipables.length} 件</span></label>
+        ${equipables.length
+        ? `<div class="inv-list">${equipables.map(itemRow).join('')}</div>`
+        : '<div class="empty">背包里没有可装备的东西。</div>'}
+      </div>
+      </div>
+
+      <div class="itab-pane" data-pane="bag" hidden>
+      <div class="field"><label>消耗品与杂物 <span class="mini">${bagItems.length} 件</span></label>
+        ${bagItems.length
+        ? `<div class="inv-list">${bagItems.map(itemRow).join('')}</div>`
+        : '<div class="empty">背包里没有能用的东西。</div>'}
+      </div>
       </div>`,
     footer: `<button class="btn ghost" onclick="UI.closeModal()">关闭</button>`,
     onMount: ov => {
+      // 装备 / 背包分两个标签页：以前挤在一屏，背包一多就得一直往下滚才看得到装备
+      const TABS = ['equip', 'bag'];
+      const setTab = name => {
+        ov.querySelectorAll('[data-itab]').forEach(b => b.classList.toggle('on', b.dataset.itab === name));
+        ov.querySelectorAll('[data-pane]').forEach(p => { p.hidden = p.dataset.pane !== name; });
+      };
+      ov.querySelectorAll('[data-itab]').forEach(b => {
+        b.onclick = () => {
+          const name = TABS.includes(b.dataset.itab) ? b.dataset.itab : 'equip';
+          setTab(name);
+          try { localStorage.setItem('mid_inv_tab_v1', name); } catch { /* 隐私模式 */ }
+        };
+      });
+      let startTab = 'equip';
+      try {
+        const t = localStorage.getItem('mid_inv_tab_v1');
+        if (TABS.includes(t)) startTab = t;
+      } catch { /* 隐私模式 */ }
+      setTab(startTab);
       const refresh = async (r) => {
         if (r?.state) Game.state = { ...Game.state, ...r.state, messages: undefined };
         else await Game.load(Game.saveId);
@@ -2078,16 +2162,29 @@ UI.openCodex = function () {
     const [tn, tc] = FAV(cur.favor || 0);
     const av = npcAvatar(cur.name);
     const pct = npcCompleteness(cur);
-    const rom = cur.romance && cur.romance.stage !== 'none' ? cur.romance : null;
-    const romMeta = { crush: ['💗', '心动', '#ff8ed4'], dating: ['❤️', '恋人', '#ff5f6d'], partner: ['💍', '伴侣', '#ffc93c'] }[rom?.stage] || null;
+
+    // 关系标签：AI 按剧情自己写的自由文本（老婆 / 仇敌 / 债主…）。
+    // 按语义给个颜色，让玩家一眼看出这个人是敌是友 —— 但**不做白名单**，
+    // 认不出来的标签就按中性色显示。
+    const relColor = t => {
+      if (/老婆|妻子|丈夫|老公|恋人|情侣|未婚|伴侣|对象|男友|女友|爱人/.test(t)) return 'rel-love';
+      if (/仇敌|死敌|敌人|宿敌|仇人|追杀|叛徒|死对头/.test(t)) return 'rel-foe';
+      if (/兄弟|姐妹|朋友|挚友|同伴|搭档|战友|恩人|救命/.test(t)) return 'rel-friend';
+      if (/债主|欠|契约|雇主|下属|上司|师父|老师|徒弟|学生/.test(t)) return 'rel-bond';
+      return 'rel-plain';
+    };
+    const tags = Array.isArray(cur.tags) ? cur.tags.filter(Boolean) : [];
+    const tagBar = tags.length
+      ? `<div class="rel-tags">${tags.map(t => `<span class="rel-tag ${relColor(t)}">${esc(t)}</span>`).join('')}</div>`
+      : '';
 
     let body = '';
     if (st.tab === '概况') {
       const row = (k, v) => v ? `<div class="cd-row"><span>${k}</span><b>${esc(v)}</b></div>` : '';
       body = `
+        ${tagBar}
         ${row('身份', cur.identity)}
         ${row('立场', cur.role)}
-        ${romMeta ? `<div class="cd-row"><span>关系</span><b style="color:${romMeta[2]}">${romMeta[0]} ${romMeta[1]}</b></div>` : ''}
         ${row('性别', cur.gender)}
         ${row('年龄', cur.age)}
         ${row('种族', cur.race)}
@@ -2099,17 +2196,10 @@ UI.openCodex = function () {
         ${cur.note ? `<div class="cd-block"><h4>性格</h4><p>${esc(cur.note)}</p></div>` : ''}
         ${(cur.traits || []).length ? `<div class="cd-block"><h4>性格标签</h4>
           <div class="chips">${cur.traits.map(t => `<span class="chip">${esc(t)}</span>`).join('')}</div></div>` : ''}
-        ${rom ? `<div class="cd-block"><h4>关系</h4>
-          <p><b style="color:${romMeta[2]}">${romMeta[0]} ${romMeta[1]}</b>${rom.since ? `（第 ${rom.since} 回合起）` : ''}</p>
-          ${rom.note ? `<p style="margin-top:4px">${esc(rom.note)}</p>` : ''}
-          <p style="margin-top:6px;font-size:11px;color:var(--muted)">
-            关系阶段由好感决定：心动 45+　恋人 65+　伴侣 85+（魅力高会略微放低门槛）</p></div>` : ''}
         ${cur.demeanor ? `<div class="cd-block"><h4>此刻 · 神态</h4><p>${esc(cur.demeanor)}</p></div>` : ''}
         ${cur.mindset ? `<div class="cd-block"><h4>此刻 · 心态</h4><p>${esc(cur.mindset)}</p></div>` : ''}
         ${cur.voice ? `<div class="cd-block"><h4>说话风格</h4><p>${esc(cur.voice)}</p></div>` : ''}
         ${cur.favorHint ? `<div class="cd-block"><h4>怎么讨他欢心</h4><p>${esc(cur.favorHint)}</p></div>` : ''}
-        ${!rom && cur.romanceable !== false ? `<div class="cd-block"><h4>关系</h4>
-          <p style="color:var(--muted)">好感 ${cur.favor || 0} / 45 —— 再近一点，可能会有别的可能。</p></div>` : ''}
         ${pct < 60 ? `<div class="cd-hint">档案完整度 ${pct}% —— 多跟他打交道，系统会补全他的资料。</div>` : ''}`;
     } else if (st.tab === '关系') {
       const rel = cur.relations || [];

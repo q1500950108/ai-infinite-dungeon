@@ -47,10 +47,16 @@
   --read-font: "PingFang SC", "Microsoft YaHei", "Hiragino Sans GB", system-ui, sans-serif;
   --ui-scale: 1;
 
-  /* 叙事配色（彩色 / 素雅）*/
-  --nar-strong: #fff;
+  /* 叙事配色（彩色 / 素雅）
+     设置里承诺的是「环境青、对话金、心理紫」，所以这三项都对应实际存在的颜色。
+     素雅模式由 body.plain-narration 把这些全部收成正文色。 */
+  --nar-env: #c9d4e0;      /* 环境 · 旁白本体 —— 偏冷的灰青 */
+  --nar-say: #ffd166;      /* 对话 · 引号里的对白 —— 金 */
+  --nar-think: #b39ddb;    /* 心理 · 括号里的心声 —— 紫 */
+  --nar-strong: #fff;      /* 加粗强调 */
   --nar-em: var(--accent-2);
   --nar-state: var(--score);
+  --nar-env-on: 1;
 }
 
 * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -169,7 +175,17 @@ body::after {
   background: rgba(61, 220, 132, .12); font-size: 11px;
 }
 .topclock .tc-phase.on-mission { color: var(--hp); background: rgba(255, 95, 109, .14); }
+.topclock .tc-phase.on-hub { color: var(--accent-2, #b39ddb); background: rgba(150, 120, 255, .16); }
 .topclock .tc-cd { color: var(--text-dim); font-size: 11.5px; }
+/* 「现世时间暂停」：任务/中转站里日历冻住时的说明，别让玩家以为时钟坏了 */
+.topclock .tc-frozen {
+  color: var(--muted); font-size: 10.5px; letter-spacing: .2px;
+  padding: 1px 7px; border-radius: 999px;
+  background: rgba(255, 255, 255, .05);
+  border: 1px dashed rgba(255, 255, 255, .16);
+  white-space: nowrap; cursor: help;
+}
+.topclock .tc-frozen[hidden] { display: none; }
 .topclock .tc-cd.soon { color: var(--warn); font-weight: 600; }
 .topclock.soon { border-color: rgba(255, 159, 67, .4); }
 @media (max-width: 860px) {
@@ -543,6 +559,60 @@ body::after {
 
 /* ── 背包 / 技能 ────────────────────────────────────────────── */
 .chips { display: flex; flex-wrap: wrap; gap: 6px; }
+
+/* ── 背包与装备弹窗：两个标签页 ── */
+.inv-tabs {
+  display: flex; gap: 6px; margin-bottom: 14px;
+  border-bottom: 1px solid var(--border-soft); padding-bottom: 10px;
+}
+.inv-tabs .tab {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 6px 14px; border-radius: 7px; font-size: 12.5px;
+  background: transparent; border: 1px solid var(--border);
+  color: var(--muted); cursor: pointer; transition: all .15s;
+}
+.inv-tabs .tab:hover { color: var(--text-dim); border-color: var(--border-strong, var(--border)); }
+.inv-tabs .tab.on {
+  background: var(--panel-2); color: var(--text);
+  border-color: var(--accent, #7c6cf0);
+}
+.inv-tabs .tab .mini { font-size: 10.5px; opacity: .7; }
+.itab-pane[hidden] { display: none; }
+/* 收起时整块不占位：背包一多会把下面的「技能」「存档」全挤到看不见 */
+.chips.collapsed { display: none; }
+
+/* ── 侧栏：可折叠的标题 ── */
+.section > h2.sec-fold {
+  cursor: pointer; user-select: none; margin-bottom: 10px;
+  transition: color .15s;
+}
+.section > h2.sec-fold:hover { color: var(--text); }
+.section > h2.sec-fold > span:first-child { display: inline-flex; align-items: center; gap: 8px; }
+.section > h2.sec-fold .caret {
+  font-size: 10px; color: var(--muted); letter-spacing: 0;
+  transition: transform .15s; display: inline-block;
+}
+
+/* ── 侧栏：装备缩略表（一行一个栏位）── */
+.equip-mini { display: flex; flex-direction: column; gap: 4px; }
+.eq-row {
+  display: flex; align-items: baseline; gap: 8px;
+  padding: 4px 8px; border-radius: 6px;
+  background: var(--panel-2); border: 1px solid var(--border);
+  border-left: 3px solid var(--rc, var(--border));
+  font-size: 11.5px; min-height: 22px;
+}
+.eq-row .eq-sl {
+  color: var(--muted); font-size: 10px; letter-spacing: .5px;
+  flex: 0 0 34px; white-space: nowrap;
+}
+.eq-row .eq-nm {
+  color: var(--text-dim); flex: 1 1 auto;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.eq-row.has .eq-nm { color: var(--text); }
+.eq-row .eq-nm i { color: var(--muted); font-style: normal; opacity: .65; }
+
 .chip {
   display: inline-flex; align-items: center; gap: 5px;
   padding: 3px 8px; border-radius: 6px; font-size: 11.5px;
@@ -552,6 +622,22 @@ body::after {
 .chip.usable { cursor: pointer; border-color: rgba(34,211,197,.35); color: var(--sta); }
 .chip.usable:hover { background: rgba(34,211,197,.12); }
 .chip.skill { border-color: rgba(124,92,255,.35); color: var(--accent-2); }
+
+/* ── 关系标签（老婆 / 仇敌 / 债主…）──
+   由 AI 按剧情自己写，所以这里只按语义上色，不做白名单。
+   放在人物卡最上面，玩家一眼看出这个人是敌是友。 */
+.rel-tags { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+.rel-tag {
+  display: inline-flex; align-items: center;
+  padding: 4px 10px; border-radius: 999px;
+  font-size: 12px; font-weight: 600; letter-spacing: .3px;
+  border: 1px solid var(--border); background: var(--panel-2); color: var(--text-dim);
+}
+.rel-tag.rel-love   { border-color: rgba(255,95,109,.5);  color: #ff8fa3; background: rgba(255,95,109,.12); }
+.rel-tag.rel-foe    { border-color: rgba(255,80,80,.5);   color: #ff7b7b; background: rgba(255,60,60,.12); }
+.rel-tag.rel-friend { border-color: rgba(34,211,197,.45); color: #4fdcc9; background: rgba(34,211,197,.10); }
+.rel-tag.rel-bond   { border-color: rgba(255,201,60,.45); color: #ffd166; background: rgba(255,201,60,.10); }
+.rel-tag.rel-plain  { border-color: rgba(160,160,190,.35); color: var(--text-dim); }
 .chip .q { opacity: .65; font-family: var(--mono); }
 .empty { font-size: 11.5px; color: var(--muted); }
 
@@ -626,8 +712,23 @@ body::after {
 .msg.gm .body .state-line { color: var(--nar-state); font-family: var(--mono); font-size: 12.5px; opacity: .95; }
 .msg.gm .body strong { color: var(--nar-strong); font-weight: 600; }
 .msg.gm .body em { color: var(--nar-em); font-style: normal; }
+/* ── 叙事配色的三类元素 ──
+   设置里写的是「环境青、对话金、心理紫」，但以前只有 strong/em 两条规则，
+   formatGm 也从不给对白加类名 —— 所以「对话金、心理紫」是空头支票。
+   现在 formatGm 会输出 .gm-say（引号里的对白）和 .gm-think（括号里的心声）。 */
+.msg.gm .body { color: var(--nar-env); }              /* 环境：旁白底色 */
+.msg.gm .body .gm-say { color: var(--nar-say); }      /* 对话：金 */
+.msg.gm .body .gm-say strong { color: var(--nar-say); }
+.msg.gm .body .gm-think { color: var(--nar-think); font-style: normal; }  /* 心理：紫 */
+.msg.gm .body .gm-think strong { color: var(--nar-think); }
 /* 素雅叙事：把强调色收掉，只留加粗 */
 body.plain-narration { --nar-strong: var(--text); --nar-em: var(--text-dim); --nar-state: var(--muted); }
+body.plain-narration .msg.gm .body,
+body.plain-narration .msg.gm .body .gm-say,
+body.plain-narration .msg.gm .body .gm-think,
+body.plain-narration .read-preview .gm-say,
+body.plain-narration .read-preview .gm-think,
+body.plain-narration .read-preview strong { color: var(--text); }
 
 .msg.player { align-self: flex-end; max-width: 82%; }
 .msg.player .body {
@@ -1588,11 +1689,15 @@ body.landing-open { overflow: hidden; }
   background: var(--ov-1); border: 1px dashed var(--border);
   font-family: var(--read-font);
   font-size: var(--read-size); line-height: var(--read-lh);
-  color: var(--text);
+  color: var(--nar-env);
 }
 .read-preview p { margin: 10px 0 0; }
+.read-preview .state-line { color: var(--nar-state); font-family: var(--mono); font-size: 12.5px; opacity: .95; }
 .read-preview strong { color: var(--nar-strong); font-weight: 600; }
 .read-preview em { color: var(--nar-em); font-style: normal; }
+/* 预览用的类名和正文完全一致 —— 所以预览里看到什么，正文里就是什么 */
+.read-preview .gm-say { color: var(--nar-say); }
+.read-preview .gm-think { color: var(--nar-think); font-style: normal; }
 
 @media (max-width: 640px) {
   .set-row { flex-direction: column; align-items: flex-start; gap: 9px; }

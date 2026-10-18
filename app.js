@@ -192,15 +192,23 @@ function applyDelta(save, d) {
 
   for (const it of [].concat(d.items || [])) {
     if (!it || !it.name) continue;
+    // ⚠ 人名 / 结构性字段名不是道具。模型会把 npcs 名单里的人当掉落物报上来，
+    //   也报过「好感度更新」「剧情标记」这种状态块的键（实测它们进了背包）。
+    if (localNotAnItem(it.name, save)) continue;
     const qty = toInt(it.qty) || 1;
-    const ex = save.inventory.find(x => x.name === it.name);
+    // 名字里的「×1」要剥掉，否则「杜蕾斯」和「杜蕾斯 ×1」会并存两条
+    const cleanName = localCleanItemName(it.name) || it.name;
+    const ex = save.inventory.find(x => x.name === cleanName);
     if (ex) {
       ex.qty += qty;
       if (ex.qty <= 0) save.inventory = save.inventory.filter(x => x !== ex);
     } else if (qty > 0) {
-      save.inventory.push({ name: String(it.name), qty, desc: String(it.desc || '') });
+      // ⚠ 以前这里只塞 { name, qty, desc } —— slot / rarity / stats 全丢，
+      //   于是网页版捡到的装备没有栏位、没有数值，等于装不上。
+      //   现在走 localGrantItem（和服务端 grantItem 同规则）。
+      save.inventory.push(localGrantItem(save, { ...it, name: cleanName }, qty));
     }
-    events.push(`${qty > 0 ? '获得' : '失去'}道具「${it.name}」`);
+    events.push(`${qty > 0 ? '获得' : '失去'}道具「${cleanName}」`);
   }
   // 技能 / 血统：模型常把加成只写在 desc 里，这里解析成真字段，否则被动加成会被吞掉。
   // 去重按归一化名字 —— 模型换个括号写法重复报同一个血统时不能算两遍。
@@ -242,7 +250,7 @@ function applyDelta(save, d) {
       if (!n?.name) continue;
       let cur = ws.npcs.find(x => x.name === n.name);
       if (!cur) {
-        cur = { name: n.name, identity: '', role: '中立', favor: 0, status: '在世', note: '', romance: { stage: 'none', since: null, note: '' }, memories: [] };
+        cur = { name: n.name, identity: '', role: '中立', favor: 0, status: '在世', note: '', memories: [] };
         // 归属：现实生活里认识的是 'reality'，任务世界里认识的是那个作品 —— 他不能追到现实来
         cur.realm = save.phase === 'mission' ? (save.mission?.work || '任务世界') : 'reality';
         ws.npcs.push(cur); events.push(`结识了「${n.name}」`);
@@ -250,6 +258,15 @@ function applyDelta(save, d) {
       if (n.identity) cur.identity = n.identity;
       const role = normRole(n.role); if (role) cur.role = role;
       if (n.note) cur.note = n.note;
+      // 外貌 / 说话风格：
+      //   · 原著人物 → **世界书说了算，AI 不许改**（否则春丽会被写成「紫色眼眸、湿透的头发」）
+      //   · 其他人物 → 存下来，人物卡上才有东西看（以前这里根本不存，卡上永远是空的）
+      if (!cur.canon) {
+        for (const k of ['appearance', 'voice', 'gender', 'age', 'race', 'demeanor']) {
+          const v = n[k] === undefined || n[k] === null ? '' : String(n[k]).trim();
+          if (v) cur[k] = v;
+        }
+      }
       if (n.favor !== undefined && n.favor !== null && n.favor !== '') {
         const b = cur.favor;
         let target = clamp(toInt(n.favor), -100, 100);
@@ -259,25 +276,9 @@ function applyDelta(save, d) {
         if (cur.favor !== b) events.push(`「${n.name}」好感 → ${cur.favor}`);
       }
       if (n.favorDelta) { cur.favor = clamp(cur.favor + toInt(n.favorDelta), -100, 100); events.push(`「${n.name}」好感 ${n.favorDelta > 0 ? '+' : ''}${n.favorDelta}`); }
-      // 恋爱线：阶段由好感把关
-      if (n.romance && typeof n.romance === 'object') {
-        const r = cur.romance ??= { stage: 'none', since: null, note: '' };
-        if (n.romance.note !== undefined) r.note = String(n.romance.note || '');
-        if (n.romance.stage) {
-          const want = String(n.romance.stage);
-          const wantId = /伴侣|结婚|老婆|丈夫/.test(want) ? 'partner'
-            : /恋人|情侣|在一起|女朋友|男朋友/.test(want) ? 'dating'
-              : /心动|暧昧|喜欢/.test(want) ? 'crush' : 'none';
-          const cap = localRomanceCap(cur.favor, (save.totalAttrs || save.attrs).cha || 10);
-          const order = ['none', 'crush', 'dating', 'partner'];
-          const okId = order[Math.min(order.indexOf(wantId), order.indexOf(cap))];
-          if (/分手|决裂|不再|拒绝/.test(want)) { r.stage = 'none'; events.push(`你和「${n.name}」的关系结束了。`); }
-          else if (order.indexOf(okId) > order.indexOf(r.stage)) {
-            r.stage = okId;
-            events.push(`【关系变化】${n.name} → ${({ crush: '心动', dating: '恋人', partner: '伴侣' })[okId] || okId}`);
-          }
-        }
-      }
+      // 关系阶段已删除（跟服务端同步）：模型还在报 romance 就直接忽略，顺手清掉旧字段
+      if (cur.romance !== undefined) delete cur.romance;
+      if (cur.romanceable !== undefined) delete cur.romanceable;
       const mem = n.memory || n.memories;
       for (const t of [].concat(mem || [])) {
         const text = String(t || '').trim();
@@ -375,6 +376,25 @@ class ProtocolGate {
 
 const tryJSON = t => { try { return JSON.parse(t); } catch { return null; } };
 
+/**
+ * 流式过程中把累积的正文画进气泡。
+ *
+ * ⚠ 以前流式用的是 `body.textContent += chunk`（纯文本），所以对话 / 心理 / 环境
+ *   这三类配色只在**刷新页面后**从存档重新渲染时才出现 —— 生成中的文字永远是单色。
+ *   现在统一走 formatGm，跟静态渲染同一条路。
+ *
+ * 为什么要 try/catch：流式文本是**半截**的（可能停在 `<` 里、可能只写了一半的项目符号），
+ * formatGm 的替换对不完整的输入是安全的，但万一以后加了新规则就必须保证
+ * 一次渲染失败不能打断整个流。
+ */
+function paintStream(body, text) {
+  try {
+    body.innerHTML = formatGm(splitOptions(text).body);
+  } catch {
+    body.textContent = splitOptions(text).body;   // 退回纯文本，至少不丢内容
+  }
+}
+
 /** 与服务端 extractState 同规则：容错各种不规范的写法 */
 function extractState(raw) {
   const open = /<<<\s*STATE/i.exec(raw);
@@ -423,56 +443,88 @@ const Backend = {
   cfg: null,
   providers: PROVIDERS,
 
-  async detect() {
-    try {
-      const r = await fetch('./api/health', { cache: 'no-store' });
-      if (!r.ok) throw 0;
-      const j = await r.json();
-      if (!j || !j.ok) throw 0;
-      this.mode = 'server';
-      return true;
-    } catch {
-      this.mode = 'local';
-      return false;
+  /**
+   * 探测有没有本地服务器（决定走完整模式还是网页模式）。
+   *
+   * ⚠ 必须重试几次：服务器刚启动、或者玩家在服务器还没起来的那一瞬间刷新页面，
+   *   一次失败就永久落到网页模式（local），之后每一轮都失败 ——
+   *   玩家看到的就是「怎么老失败」，而且刷新也不一定碰得巧。
+   *   这里做 3 次探测（间隔递增），能显著减少误判。
+   */
+  async detect(tries = 3) {
+    for (let i = 0; i < tries; i++) {
+      try {
+        const r = await fetch('./api/health', { cache: 'no-store' });
+        if (!r.ok) throw 0;
+        const j = await r.json();
+        if (!j || !j.ok) throw 0;
+        this.mode = 'server';
+        return true;
+      } catch {
+        if (i < tries - 1) await new Promise(res => setTimeout(res, 400 + i * 700));
+      }
     }
+    this.mode = 'local';
+    return false;
   },
 
   /* ── 配置 ── */
+
+  /**
+   * 切回「用服务器上配好的接口」。
+   * ⚠ 必须**同时**清 localStorage 和内存里的 this.cfg ——
+   *   只清 localStorage 的话，界面上的 provider / baseUrl / apiKey 全都还是旧的那份，
+   *   看起来像没生效（这就是「点了开关还是 401」的原因）。
+   */
+  async useServerApi() {
+    try {
+      localStorage.removeItem(LS_CFG_SERVER);
+      localStorage.removeItem(LS_USE_HOST);
+    } catch { /* 隐私模式 */ }
+    this._gm = this._gm;   // 不动提示词
+    return this.getConfig();
+  },
+
   async getConfig() {
     if (this.mode === 'server') {
       const r = await fetch('./api/config', { cache: 'no-store' });
       const serverCfg = await r.json();
-      // ── 「用这个网站自带的接口」──
-      // 分享出去之后（隧道 / 局域网），玩家不需要自己配 Key：请求甩给同源的 /api/relay，
-      // 由服务器转发。顺带绕过了接口不给跨域（CORS）的问题。
-      if (localStorage.getItem(LS_USE_HOST) === '1') {
-        this.guestMode = false;
-        this.hostRelay = true;
-        this.cfg = {
-          ...serverCfg, provider: 'host', providerLabel: '本网站自带的接口（推荐）',
-          baseUrl: '', apiKey: '', localGuest: false, guest: true,
-        };
-        this.providers = Object.fromEntries((serverCfg.providers || []).map(p => [p.id, p]));
-        return this.cfg;
-      }
-      // ── 「用自己的 Key 玩」──
-      // 完整模式下默认是用**服务器上**的 Key。但别人来玩时不该消耗你的额度，
-      // 所以允许这个浏览器自己存一份配置：存了就直连那个接口（不吃服务器的 Key）。
+      this.providers = Object.fromEntries((serverCfg.providers || []).map(p => [p.id, p]));
+
+      // ① 这个浏览器自己填过一份 → 直连它（不吃服务器的 Key）。
+      //    ⚠ 必须**真的有一把 Key** 才算数。以前只检查 baseUrl + model，
+      //    于是「建号向导第 0 步」会把服务器的地址/模型抄进浏览器那份（Key 留空），
+      //    存出一个「有地址没 Key」的配置 → guestMode=true → 每次请求都 401 无效的令牌，
+      //    而服务器上明明有一把好用的 Key。这是「本地一直 401」的真正原因。
       const guest = JSON.parse(localStorage.getItem(LS_CFG_SERVER) || 'null') || {};
+      const LOCAL_NO_KEY = new Set(['ollama', 'lmstudio']);
       const guestReady = Boolean(guest.baseUrl && guest.model
-        && (!(guest.needsKey ?? true) || guest.apiKey));
-      this.guestMode = guestReady;
-      this.hostRelay = false;
-      this.cfg = guestReady
-        ? {
+        && (LOCAL_NO_KEY.has(guest.provider) || guest.apiKey));
+      if (guestReady) {
+        this.guestMode = true;
+        this.hostRelay = false;
+        this.cfg = {
           ...serverCfg,
           ...guest,
           providerLabel: (PROVIDERS[guest.provider] || {}).label || serverCfg.providerLabel,
           guest: true,
           localGuest: true,
-        }
-        : { ...serverCfg, guest: false };
-      this.providers = Object.fromEntries((this.cfg.providers || []).map(p => [p.id, p]));
+        };
+        return this.cfg;
+      }
+
+      // ② 没填过自己的 → 用服务器上配好的（localhost 直接调，分享出去时走同源中转）
+      const isLocal = /^(localhost|127\.0\.0\.1|\[::1\])$/.test(location.hostname);
+      this.guestMode = false;
+      this.hostRelay = false;
+      this.cfg = {
+        ...serverCfg,
+        apiKey: '',                  // 绝不把服务器的 Key 交给浏览器
+        guest: false,
+        localGuest: false,
+        // 本机玩 = 走服务器的 /api/turn；分享给别人才需要 /api/relay
+        viaRelay: !isLocal,
+      };
       return this.cfg;
     }
     // 纯前端模式（静态托管）：如果这个页面上真的躺着一个同源服务器，可以让它中转
@@ -520,7 +572,19 @@ const Backend = {
       if (patch && patch.__guest) {
         const { __guest, ...rest } = patch;
         const cur = JSON.parse(localStorage.getItem(LS_CFG_SERVER) || '{}');
-        const merged = { ...cur, ...rest, needsKey: (PROVIDERS[rest.provider] || cur).needsKey ?? true };
+        // 只有本机跑的服务（ollama / lmstudio）才允许「不要 Key」。
+        // 其余一律必须带 Key —— 一份没有 Key 的配置存下来只会让玩家每次请求都 401，
+        // 而服务器上明明有一把能用的 Key。（'custom' 在厂商表里被标成 needsKey:false，
+        // 那是给「服务器上的自定义接口」用的，不代表浏览器这份可以不带 Key。）
+        const LOCAL_NO_KEY = new Set(['ollama', 'lmstudio']);
+        const needsKey = !LOCAL_NO_KEY.has(rest.provider);
+        const merged = { ...cur, ...rest, needsKey };
+        // 没给 Key 就不当「自己的配置」，把旧的清掉，老老实实用服务器的
+        if (needsKey && !merged.apiKey) {
+          localStorage.removeItem(LS_CFG_SERVER);
+          await this.getConfig();
+          return { ok: true, config: this.cfg, guest: false };
+        }
         localStorage.setItem(LS_CFG_SERVER, JSON.stringify(merged));
         await this.getConfig();
         return { ok: true, config: this.cfg, guest: true };
@@ -789,7 +853,7 @@ const Backend = {
       if (!r.ok) throw new Error(j.error || '时间推进失败');
       return j.state;
     }
-    localTick(state, skipToMission ? null : (minutes || 1), skipToMission);
+    localTick(state, skipToMission ? null : (minutes || 1), { skipToMission });
     this._put(state);
     return state;
   },
@@ -1058,7 +1122,13 @@ function localReroll(s, messages) {
    纯前端模式没有服务器，属性/装备/判定的计算在这里复刻一份。
    两边的规则保持一致，数据都来自 gamedata.js。 */
 const ATTR_KEYS = ['con', 'agi', 'int', 'wil', 'cha', 'luk'];
-const EQUIP_SLOT_KEYS = () => (window.GAME_DATA?.equipSlots) || ['weapon', 'offhand', 'armor', 'accessory1', 'accessory2'];
+const EQUIP_SLOT_KEYS = () => (window.GAME_DATA?.equipSlots) || ['head', 'weapon', 'offhand', 'armor', 'accessory1', 'accessory2'];
+/** 一个 item.slot 值能戴到哪些栏位（和服务端 SLOT_ACCEPTS 同规则） */
+const SLOT_ACCEPTS = () => ({
+  head: ['head'], weapon: ['weapon'], offhand: ['offhand'],
+  armor: ['armor'], accessory: ['accessory1', 'accessory2'],
+});
+const slotsForSlot = slot => (SLOT_ACCEPTS()[slot] || [slot]);
 
 function localMutation(state, fn) {
   const r = fn(state) || {};
@@ -1156,14 +1226,19 @@ function localWorldBookBlock(save, tier = 'entry') {
         const meta = [n.gender, n.age, n.race, n.faction].filter(Boolean).join('｜');
         if (meta) bits.push(`　　档案：${meta}`);
         if (n.traits?.length) bits.push(`　　性格标签：${n.traits.join('、')}`);
-        if (n.appearance) bits.push(`　　外貌：${n.appearance}`);
-        if (n.voice) bits.push(`　　说话风格：${n.voice}`);
+        if (n.appearance) bits.push(`　　**外貌（照这个写，不许改）**：${n.appearance}`);
+        if (n.voice) bits.push(`　　**说话风格（照这个写）**：${n.voice}`);
         if (n.personality) bits.push(`　　性格：${n.personality}`);
         if (n.hook) bits.push(`　　与玩家的钩子：${n.hook}`);
         if (n.favorHint) bits.push(`　　好感变化规则：${n.favorHint}`);
         if (n.relations?.length) bits.push(`　　关系：${n.relations.map(r => `${r.name}（${r.label}）`).join('；')}`);
         out.push(bits.join('\n'));
       }
+      out.push('\n★ **原著人物的外貌、发色、体型、穿着、说话风格是原著事实，不是你的创作空间。**'
+        + '\n　 上面这些人的长相就按「外貌」那一行写，**不许自己改成别的发色 / 别的衣服 / 别的身材** ——'
+        + '\n　 写错就是 OOC，玩家一眼就能看出来。他们换了衣服、受了伤、淋了雨，可以写变化，'
+        + '\n　 但**底色（发色、体格、标志性穿着）必须始终一致**。'
+        + '\n　 状态块里 npcs 的 appearance 字段**不要填**，系统会自己维护，填了也会被丢弃。');
     } else {
       out.push('这个世界有头有脸的人（详细档案在系统里，状态块里更新好感就行）：');
       for (const n of b.npcs) out.push(`　· ${n.name}｜${n.identity || ''}｜${n.role || ''}`);
@@ -1273,6 +1348,29 @@ function localDedupePowers(list) {
   if (removed) { list.length = 0; list.push(...out); }
   return removed;
 }
+/** 去掉模型自带的数量后缀：「杜蕾斯 ×1」→「杜蕾斯」（和服务端 cleanItemName 同规则） */
+function localCleanItemName(name) {
+  return String(name || '')
+    .replace(/\s*[×xX*]\s*\d+\s*$/, '')
+    .replace(/\s*[（(]\s*\d+\s*[)）]\s*$/, '')
+    .trim();
+}
+/** 这个名字像是「道具」吗 —— 人名和状态块的键不算（和服务端 looksLikeItemName 同规则） */
+function localNotAnItem(name, save) {
+  const s = localCleanItemName(name);
+  if (!s) return true;
+  if (/^(好感度?|好感度更新|关系|剧情标记|flag|flags|状态|效果|备注|note|记忆|标签|属性|任务进度|进度更新|积分|当前积分|经验|战绩|等级|hp|mp|sp|生命|生命值|体力|体力值|精力|现金|金钱|金钱数|时间|日期|时刻|位置|地点|阶段|身份|职业|年龄|性别|备注说明)$/i.test(s)) return true;
+  if (/^(获得|领悟|习得|掌握|觉醒|失去|消耗|得到|学会|解锁|更新|被动|主动|冷却|触发)(状态|技能|能力|道具|物品|装备|武器|效果|被动|标记|进度)/.test(s)) return true;
+  if (/^(被动|主动|冷却|触发|说明|来源|加成|代价)/.test(s)) return true;
+  if (/[。！？]$/.test(s)) return true;
+  // 人名不是道具：模型会把 npcs 名单里的人当掉落物报上来（实测「春丽」「嘉米」）
+  if (save) {
+    if ((save.life?.npcs || []).some(x => String(x?.name || '').trim() === s)) return true;
+    if (String(save.name || '').trim() === s) return true;
+  }
+  return false;
+}
+
 /** 按归一化名字在数据表里找（半角括号的「宇智波血统(残)」也要认出正主） */
 function localItemByLooseName(name) {
   const key = localNormPowerName(name);
@@ -1282,6 +1380,89 @@ function localItemByLooseName(name) {
   if (exact) return exact;
   const stripped = key.replace(/残$/, '');
   return stripped === key ? null : all.find(x => localNormPowerName(x.name) === stripped) || null;
+}
+
+/* ── 从正文措辞里读稀有度 / 栏位（和服务端 lib/rules.mjs 同规则）──
+   模型爱在正文写「传说级饰品」这种话，状态块却不一定报字段。 */
+const CN_RARITY = {
+  普通: 'common', 常见: 'common', 一般: 'common', 精良: 'fine', 优良: 'fine',
+  稀有: 'rare', 史诗: 'epic', 传说: 'legend', 传奇: 'legend', 神话: 'myth', 神器: 'myth',
+};
+const CN_SLOT = {
+  饰品: 'accessory', 配件: 'accessory', 首饰: 'accessory',
+  护甲: 'armor', 防具: 'armor', 装备: 'armor',
+  武器: 'weapon', 主武器: 'weapon', 副手: 'offhand', 盾: 'offhand',
+  消耗品: 'consumable', 道具: 'consumable', 技能: 'skill', 血统: 'bloodline',
+};
+function localParseRarityHint(text) {
+  const m = /(普通|常见|一般|精良|优良|稀有|史诗|传说|传奇|神话|神器)(?:级|品|阶|品质)?/.exec(String(text || ''));
+  return m ? CN_RARITY[m[1]] || null : null;
+}
+function localParseSlotHint(text) {
+  const m = /(饰品|配件|首饰|护甲|防具|主武器|武器|副手|消耗品|道具|技能|血统)/.exec(String(text || ''));
+  return m ? CN_SLOT[m[1]] || null : null;
+}
+/** AI 没报 slot 时按名字猜栏位（饰品要排在护甲前面：「面具」两种都像） */
+function localGuessSlot(name, desc) {
+  const s = `${name || ''} ${desc || ''}`;
+  if (/(军帽|头盔|安全帽|钢盔|警帽|兜帽|头巾|面罩|面具|护目镜|单片镜|墨镜|眼镜|王冠|冠冕|发饰|帽子|棒球帽|头带|额饰|面甲|防毒)/.test(s)) return 'head';
+  if (/(戒指|项链|吊坠|徽章|耳环|手环|脚链|义眼|纹身|印记|指环|耳钉|耳机|耳麦|通讯器|对讲机|无线电|护身符|挂坠|腕表|手表|腰带|披风|勋章|围巾)/.test(s)) return 'accessory';
+  if (/(盾|护符|符箓|卷轴|罗盘|灯笼|副手|箭袋|弹药)/.test(s)) return 'offhand';
+  if (/(甲|铠|护腿|外骨骼|防弹衣|胸甲|战袍|斗篷|护额|制服|装置|护甲|装甲|背包|推进器|背心|防弹)/.test(s)) return 'armor';
+  if (/(药|丸|丹|剂|针剂|血清|绷带|口粮|干粮|仙豆|符水|药剂)/.test(s)) return 'consumable';
+  if (/(刀|剑|枪|矛|戟|斧|锤|弓|弩|棍|棒|镰|匕首|苦无|手里剑|短刃|长刀|光剑|魔杖|法杖|拳套|爪|鞭|铳|炮|刃|刺|针|镖)/.test(s)) return 'weapon';
+  return 'consumable';
+}
+function localDefaultStats(slot, rarity) {
+  const tier = { common: 1, fine: 2, rare: 3, epic: 5, legend: 8, myth: 12 }[rarity] || 1;
+  if (slot === 'weapon') return { atk: tier * 2 };
+  if (slot === 'armor') return { def: tier * 2, maxHp: tier * 2 };
+  if (slot === 'offhand') return { def: tier };
+  if (slot === 'accessory') return { luk: tier, def: tier };
+  return {};
+}
+/** 名称里前置的稀有度后缀（「史诗级护腕」→「护腕」），并且把那份稀有度返回 */
+function localStripRarityPrefix(name) {
+  const m = /^(普通|精良|稀有|史诗|传说|传奇|神话|神器)(?:级|品|阶)?\s*(.+)$/.exec(String(name || '').trim());
+  return m ? { rarity: CN_RARITY[m[1]] || null, name: m[2].trim() } : { rarity: null, name: String(name || '') };
+}
+
+/**
+ * 剧情里拿到的道具 → 一条真正的道具记录（服务端 lib/rules.mjs grantItem 的本地对应版）。
+ * ⚠ 以前网页版只塞 { name, qty, desc }，slot / rarity / stats 全丢，
+ *   于是捡到的装备没有栏位也没有数值，等于装不上。
+ */
+function localGrantItem(save, raw, qty = 1) {
+  const def = localItemByLooseName(raw?.name);
+  const stripped = localStripRarityPrefix(raw?.name);
+  const name = stripped.name || String(raw?.name || '未知道具');
+  const hint = `${raw?.name || ''} ${raw?.desc || ''} ${raw?.rarity || ''} ${raw?.slot || ''}`;
+  const rawId = String(raw?.rarity || '');
+  const rarity = /^(common|fine|rare|epic|legend|myth)$/.test(rawId) ? rawId
+    : (localParseRarityHint(rawId) || localParseRarityHint(hint) || stripped.rarity || 'common');
+  const slot = localParseSlotHint(raw?.slot) || localParseSlotHint(raw?.desc) || localParseSlotHint(raw?.name)
+    || localGuessSlot(name, raw?.desc);
+  const it = {
+    id: def ? def.id : `x_${name.replace(/\s+/g, '_')}`,
+    name: def ? def.name : name,
+    desc: String(raw?.desc || def?.desc || ''),
+    slot: def ? def.slot : slot,
+    rarity: def ? def.rarity : rarity,
+    stats: {},
+    qty: Math.max(1, Number(qty) || 1),
+    source: def ? 'library' : 'story',
+  };
+  if (raw?.stats && typeof raw.stats === 'object') {
+    for (const [k, v] of Object.entries(raw.stats)) {
+      if (['atk', 'def', 'con', 'agi', 'int', 'wil', 'cha', 'luk', 'maxHp', 'maxSta'].includes(k)) {
+        const n = Number(v);
+        if (Number.isFinite(n) && n !== 0) it.stats[k] = n;
+      }
+    }
+  }
+  if (!Object.keys(it.stats).length) it.stats = localDefaultStats(it.slot, it.rarity);
+  if (raw?.perk) it.perk = String(raw.perk).slice(0, 120);
+  return it;
 }
 
 function localRefresh(s) {
@@ -1388,9 +1569,9 @@ function localGrant(save, def) {
   const ex = save.inventory.find(i => i.id === def.id);
   if (ex) { ex.qty += 1; return null; }
   save.inventory.push({ ...def, qty: 1 });
-  if (['weapon', 'offhand', 'armor', 'accessory'].includes(def.slot)) {
+  if (Boolean(SLOT_ACCEPTS()[def.slot])) {
     save.equipment ??= {};
-    const slots = def.slot === 'accessory' ? ['accessory1', 'accessory2'] : [def.slot];
+    const slots = slotsForSlot(def.slot);
     for (const sl of slots) if (!save.equipment[sl]) { save.equipment[sl] = def.id; return sl; }
   }
   return null;
@@ -1446,7 +1627,7 @@ function localEquip(save, itemId) {
   const inv = (save.inventory || []).find(i => i.id === itemId);
   if (!inv) return { ok: false, msg: '背包里没有这件装备。' };
   const def = window.GAME_DATA?.equipment.find(x => x.id === itemId) || inv;
-  if (!['weapon', 'offhand', 'armor', 'accessory'].includes(def.slot)) {
+  if (!Boolean(SLOT_ACCEPTS()[def.slot])) {
     return { ok: false, msg: `「${def.name}」不是可穿戴的装备。` };
   }
   save.equipment ??= {};
@@ -1456,7 +1637,7 @@ function localEquip(save, itemId) {
       return { ok: true, msg: `已卸下「${def.name}」。` };
     }
   }
-  const slots = def.slot === 'accessory' ? ['accessory1', 'accessory2'] : [def.slot];
+  const slots = slotsForSlot(def.slot);
   const slot = slots.find(s => !save.equipment[s]) || slots[slots.length - 1];
   const replaced = save.equipment[slot];
   save.equipment[slot] = itemId;
@@ -1516,7 +1697,7 @@ function localCreateCharacter(w) {
     // 开局积分清零：出身自带的那点照给，其余全靠挣
     score: (d.economy?.startScore || 0) + (origin?.score || 0),
     hp: null, maxHp: null, sta: null, maxSta: null, status: 'alive',
-    equipment: { weapon: null, offhand: null, armor: null, accessory1: null, accessory2: null },
+    equipment: { head: null, weapon: null, offhand: null, armor: null, accessory1: null, accessory2: null },
     inventory: [], skills: [], bloodlines: [], flags: {}, dungeon: null,
     summary: '', messages: [], checks: [], life: { quests: [], npcs: [], faction: '' },
     // 开局落在主神空间（中转站），并且第一次指定世界免费
@@ -1606,14 +1787,36 @@ function normalizeCustomLocal(entry, kind) {
     const v = Math.max(-3, Math.min(6, Math.round(Number(entry.stats?.[k]) || 0)));
     if (v) { stats[k] = v; sum += Math.abs(v); }
   }
+  // ⚠ 以前这里是 `sum <= cap ? stats : {}` —— 超一点就整份清零。
+  //   玩家写满六项（+2 ×6 = 12）是最自然的写法，结果天赋属性全废。
+  //   改成按权重削到上限，保留玩家的分配意图（跟服务端同一套规则）。
+  if (sum > cap) {
+    const keys = Object.keys(stats);
+    let guard = 200;
+    while (sum > cap && guard-- > 0) {
+      const big = keys.reduce((a, b) => (Math.abs(stats[b]) > Math.abs(stats[a]) ? b : a), keys[0]);
+      if (Math.abs(stats[big]) > 1) { stats[big] -= Math.sign(stats[big]); sum -= 1; }
+      else {
+        const drop = keys.find(k => sum > cap && Math.abs(stats[k]) === 1);
+        if (!drop) break;
+        delete stats[drop]; sum -= 1;
+      }
+    }
+  }
   const out = {
     id: CUSTOM_ID, custom: true,
-    name: String(entry.name).trim().slice(0, 16),
-    desc: String(entry.desc || '').trim().slice(0, 80),
-    perk: String(entry.perk || '').trim().slice(0, 120) || null,
+    name: String(entry.name).trim().slice(0, 24),
+    desc: String(entry.desc || '').trim().slice(0, 160),
+    perk: String(entry.perk || '').trim().slice(0, 300) || null,
     icon: kind === 'talent' ? '✍️' : '📝',
-    stats: sum <= cap ? stats : {},
+    stats,
   };
+  // 战斗属性（攻击 / 防御 / 生命与体力上限）也认 —— 写「攻击+10」不该等于没写
+  const COMBAT_CAP = { atk: 12, def: 12, maxHp: 40, maxSta: 40 };
+  for (const [k, limit] of Object.entries(COMBAT_CAP)) {
+    const v = Math.round(Number(entry.stats?.[k]) || 0);
+    if (v) out.stats[k] = Math.max(-limit, Math.min(limit, v));
+  }
   if (kind === 'talent') out.rarity = entry.rarity || 'rare';
   else {
     out.startItems = (entry.startItems || []).filter(i => (i?.name || '').trim()).slice(0, 2)
@@ -1772,6 +1975,19 @@ const Game = {
     if (!action) return;
     if (this.state.status === 'dead') { UI.openDeath(); return; }
 
+    // ⚠ 页面可能在「服务器还没起来」的时候加载过 —— 那一刻 Backend.detect() 失败，
+    //   前端就把自己定成了网页模式（local），之后服务器起来了它**不会自己恢复**，
+    //   于是每一轮都失败（玩家看到的就是「怎么老失败」）。
+    //   所以每轮开始前重探一次：只要能连上服务器，就切回完整模式。
+    if (Backend.mode !== 'server') {
+      const cameBack = await Backend.detect().catch(() => false);
+      if (cameBack) {
+        await Backend.getConfig().catch(() => {});
+        this.addSystem('已连上本地服务器，切回完整模式（存档在 saves/ 目录）。', 'ok');
+        renderState(this.state);
+      }
+    }
+
     this.busy = true;
     setComposerEnabled(false);
     closeChoices();
@@ -1805,6 +2021,10 @@ const Game = {
   },
 
   async turnServer(action, body) {
+    // 流式过程中累积的**原始文本**。以前是直接读 body.textContent ——
+    // 那在把显示层改成格式化 HTML 之后就读不到了（会读到带标签的文本），
+    // 所以原始文本必须自己留着。
+    let raw = '';
     const resp = await fetch(`./api/saves/${this.saveId}/turn`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -1817,7 +2037,7 @@ const Game = {
       throw new Error(msg);
     }
     await readSSE(resp, ev => {
-      if (ev.type === 'delta') { body.textContent += ev.text; body.classList.add('cursor'); scrollIfNear(); }
+      if (ev.type === 'delta') { raw += ev.text; paintStream(body, raw); body.classList.add('cursor'); scrollIfNear(); }
       else if (ev.type === 'check') { this.pendingCheck = ev.check; }
       else if (ev.type === 'settling') { this._settleNode = this.addSystem('⏳ 主神正在结算本轮结果……'); }
       else if (ev.type === 'state') { this.state = { ...this.state, ...ev.state, messages: undefined }; }
@@ -1826,11 +2046,11 @@ const Game = {
       } else if (ev.type === 'error') { this.addSystem(`⚠ ${ev.message}`, 'bad'); }
     });
     if (this._settleNode) { this._settleNode.remove(); this._settleNode = null; }
-    const rawText = body.textContent;
+    const rawText = raw;
     this.messages.push({ role: 'player', content: action, at: nowISO() });
     this.messages.push({ role: 'gm', content: rawText, at: nowISO() });
-    // 正文里的选项行改成按钮，正文只留叙事
-    body.textContent = splitOptions(rawText).body;
+    // 正文里的选项行改成按钮，正文只留叙事（同样要过 formatGm 才有配色）
+    body.innerHTML = formatGm(splitOptions(rawText).body);
     // 把判定结果插在这段叙事前面
     if (this.pendingCheck) { insertCheckCard(body, this.pendingCheck); this.pendingCheck = null; }
     renderChoices(rawText);
@@ -1840,7 +2060,15 @@ const Game = {
   async turnLocal(action, body) {
     const cfg = Backend.cfg;
     if (cfg.provider === 'offline') {
-      throw new Error('纯前端模式没有内置离线剧本引擎。请到「接口与设置」里配置一个 API，或用本地服务器模式（双击 start.bat）游玩离线副本。');
+      // 最常见的原因不是「没配接口」，而是**页面加载时没连上服务器**，
+      // 前端就落到了网页模式。所以先把这句话放在最前面。
+      throw new Error(
+        '现在跑的是网页模式（没连上本地服务器）。\n'
+        + '最可能的原因：这一页是在服务器还没起来的时候打开的。\n'
+        + '解决：先确认「启动游戏.bat」那个黑窗口还在跑，然后按 Ctrl+F5 刷新本页；\n'
+        + '刷新后会自动连上完整模式。\n'
+        + '如果你确实想用网页模式，就到右上角「设置」里配一个 API。'
+      );
     }
     // 「用这个网站自带的接口」：不需要 baseUrl / model / key，全交给服务器
     if (!Backend.hostRelay) {
@@ -1913,7 +2141,19 @@ const Game = {
       throw new Error(`接口返回 HTTP ${resp.status}：${t.slice(0, 240)}`);
     }
 
-    const gate = new ProtocolGate(txt => { body.textContent += txt; body.classList.add('cursor'); scrollIfNear(); });
+    // ⚠ 流式过程中也要走 formatGm（以前是 body.textContent += txt，纯文本，
+    //   所以对话/心理/环境的配色要刷新页面才出现）。
+    //   每来一小段就重解析全部文本确实有点浪费，所以按时间节流到 ~80ms。
+    let lastPaint = 0;
+    const painter = () => {
+      const now = Date.now();
+      if (now - lastPaint < 80) return;
+      lastPaint = now;
+      paintStream(body, gate.raw);
+      body.classList.add('cursor');
+      scrollIfNear();
+    };
+    const gate = new ProtocolGate(painter);
     const reader = resp.body.getReader();
     const dec = new TextDecoder();
     let buf = '';
@@ -1935,14 +2175,44 @@ const Game = {
     gate.finish();
     const raw = gate.raw;
     const parsed = extractState(raw);
-    const shown = stripState(raw) || '（主神空间沉默了片刻，没有回应。）';
+    // ⚠ 必须 let —— 中转站那段会把它改写（曾经写成 const，
+    //   于是「中转站改时间戳」这行直接抛 Assignment to constant variable，
+    //   整个回合在落盘前中断：存档不写、回退失效，而且只在 hub 才触发，很难查）。
+    let shown = stripState(raw) || '（主神空间沉默了片刻，没有回应。）';
 
     this.state.turn += 1;
     this.messages.push({ role: 'player', content: action, at: nowISO() });
+    // 存**剥掉状态块**的正文 —— 跟服务端一致（服务端存的也是 stripState 之后的）。
+    // 渲染路径还会再 stripState 一次，那只是防御，正常这里是干净的。
     this.messages.push({ role: 'gm', content: shown, at: nowISO() });
 
     const events = applyDelta(this.state, parsed || heuristicDelta(shown));
     for (const e of events) if (e) this.addSystem(e, 'warn');
+
+    // ── 时钟对账（和服务端同规则）──
+    // 模型几乎不报 advance（实测 73 回合 0 次），但它在正文里**一直写着绝对时间**。
+    // 以前只按「每轮 1 分钟」兜底，等于时间冻住 —— 顶栏一直显示同一个时刻。
+    // 现实世界的时间推进（任务世界和中转站都不动这个日历）
+    if (this.state.phase === 'life') {
+      const asked = parsed && Number(parsed.advance);
+      let moved = asked ? localTick(this.state, asked) : 0;
+      if (!moved) moved = localAlignClockToStamp(this.state, shown);
+      // ⚠ 对齐不动（模型照抄了和现在一样的时间戳）时按正文措辞估时长。
+      //   以前固定 1 分钟/轮，而任务派发窗口是一周 —— 时钟等于永远不动。
+      if (!moved) moved = localTick(this.state, localGuessAdvance(shown), { cap: MAX_GUESS_ADVANCE });
+      if (moved > 1) this.addSystem(`时间推进 ${localHumanDuration(moved)} → ${localClockText(this.state)}`, 'warn');
+    } else if ((this.state.phase === 'hub' || this.state.phase === 'mission') && shown) {
+      // 中转站 / 任务世界：顶栏那个日历是冻结的，正文的日期要摁回去，
+      // 否则模型会顺着旧消息把日期编回去（实测 1月3日 被写回 1月1日 00:08）
+      const fixed = localNormalizeStamp(shown, localClockText(this.state));
+      if (fixed !== shown) { shown = fixed; this.messages[this.messages.length - 1].content = fixed; }
+    }
+    // 不管哪个阶段，都按真值把 HP / 体力的**分母**改对 ——
+    // 模型会照抄旧的「体力:133/135」，而实际上限早涨到 208 了。
+    if (shown) {
+      const fixed2 = localNormalizeStamp(shown, '', { maxHp: this.state.maxHp, maxSta: this.state.maxSta });
+      if (fixed2 !== shown) { shown = fixed2; this.messages[this.messages.length - 1].content = fixed2; }
+    }
 
     // 滚动摘要 + 落盘
     const win = cfg.historyWindow || 18;
@@ -1955,7 +2225,8 @@ const Game = {
       this.state.summary = old.map(m => `${m.role === 'player' ? '玩家' : 'GM'}：${m.content.replace(/\s+/g, ' ').slice(0, 90)}`).join(' / ').slice(-1500);
     }
     Backend._put(this.state);
-    body.textContent = splitOptions(shown).body;
+    // 收尾重画一次（和流式用同一个函数，保证颜色一致）
+    body.innerHTML = formatGm(splitOptions(shown).body);
     if (check) insertCheckCard(body, check);
     renderChoices(shown);
     localRefresh(this.state);
@@ -2159,19 +2430,15 @@ function localFavorMult(save) {
   const cha = (save.totalAttrs || save.attrs || {}).cha ?? 10;
   return Math.max(0.4, Math.min(2.2, 1 + (cha - 10) * 0.05));
 }
-/** 好感能撑到的最高关系阶段（与服务端 romanceCap 同规则） */
-function localRomanceCap(favor, cha = 10) {
-  const bonus = Math.max(0, Math.floor(((Number(cha) || 10) - 10) / 3));
-  if (favor >= 85 - bonus * 5) return 'partner';
-  if (favor >= 65 - bonus * 5) return 'dating';
-  if (favor >= 45 - bonus * 5) return 'crush';
-  return 'none';
-}
+// （本地模式原本复刻了一份 romanceCap —— 服务端删掉恋爱线后，这里也一起删了）
 
 /* ── 时间推进（与服务端 lib/rules.mjs 同规则：一条分钟轴） ── */
 const TIME_SLOTS = ['清晨', '上午', '下午', '夜晚'];
 const MINUTES_PER_SLOT = 240, MINUTES_PER_DAY = 1440, SLOTS_PER_WEEK = 28;
 const MINUTES_PER_WEEK = 7 * MINUTES_PER_DAY;
+/** 从正文措辞估算时间跨度时允许的最大值（约半年）—— 和服务端 MAX_GUESS_ADVANCE 一致。
+ *  给模型报的 advance 那道「一天」护栏不该拿来截断玩家明说的「几天后」。 */
+const MAX_GUESS_ADVANCE = MINUTES_PER_DAY * 190;
 
 /** 读本地存档的时钟（绝对分钟）。旧存档的 clock.slot 是「格」，换算成分钟。 */
 function localMinutes(s) {
@@ -2208,6 +2475,80 @@ function localHumanDuration(mins) {
   return [d ? `${d} 天` : '', h ? `${h} 小时` : '', (m || (!d && !h)) ? `${m} 分` : ''].filter(Boolean).join(' ') || '不到 1 分';
 }
 
+/* ── 时钟对账（和服务端 lib/rules.mjs 同规则）──
+   模型写在正文里的是**绝对时间**，程序以前只认状态块的**增量**（advance），
+   而模型几乎不报 advance —— 于是时钟永远停在开局那一刻。
+   这里读它写的绝对时间，把时钟对齐过去。 */
+function localParseClockStamp(text) {
+  const m = /(?:^|【|\s)(\d{2,4})\s*年\s*(\d{1,2})\s*月\s*(\d{1,2})\s*日[^\d]{0,6}(\d{1,2})\s*[：:]\s*(\d{2})/.exec(String(text || ''));
+  if (!m) return null;
+  const year = Number(m[1]) < 100 ? 2000 + Number(m[1]) : Number(m[1]);
+  const month = Number(m[2]), date = Number(m[3]), hh = Number(m[4]), mm = Number(m[5]);
+  if (month < 1 || month > 12 || date < 1 || date > 31 || hh > 23 || mm > 59) return null;
+  const months = (year - 2026) * 12 + (month - 1);
+  const days = months * 30 + (date - 1);
+  if (days < 0) return null;
+  return days * MINUTES_PER_DAY + hh * 60 + mm;
+}
+/** 从正文措辞估「这一轮过了多久」（分钟）—— 和服务端 guessAdvanceFromProse 同规则。
+ *  模型不报 advance、又在正文里照抄同一个时间戳时，靠它让时钟继续走。 */
+function localGuessAdvance(text) {
+  const s = String(text || '');
+  if (!s) return 10;
+  if (/半年后|一年后/.test(s)) return 180 * MINUTES_PER_DAY;
+  if (/一个月后|下个月/.test(s)) return 30 * MINUTES_PER_DAY;
+  if (/半个月|两周后/.test(s)) return 15 * MINUTES_PER_DAY;
+  if (/一周后|一星期后|七天后|整整一周/.test(s)) return 7 * MINUTES_PER_DAY;
+  if (/几天后|数日后|三天后|两天后|过了几天/.test(s)) return 3 * MINUTES_PER_DAY;
+  if (/第二天|次日|隔天|一夜|整夜|通宵|睡到天亮|醒来时.{0,6}(天亮|阳光|太阳)/.test(s)) return 8 * 60;
+  if (/午睡|打了个盹|小睡|眯了一会儿|补觉/.test(s)) return 90;
+  if (/傍晚|黄昏|天色.{0,3}(暗|黑)|日落|入夜|华灯初上/.test(s)) return 5 * 60;
+  if (/中午|正午|午饭|午餐/.test(s)) return 3 * 60;
+  if (/凌晨|后半夜|天快亮|破晓/.test(s)) return 4 * 60;
+  if (/通勤|地铁|公交|开车|路上|赶路|长途|飞机|火车|高铁|出差|跨城/.test(s)) return 60;
+  if (/出门|走到|上楼|下楼|进门|回家|到了.{0,4}(楼下|门口|公司|单位)/.test(s)) return 15;
+  if (/睡|躺下|闭眼|休息/.test(s)) return 60;
+  if (/吃饭|喝酒|喝茶|咖啡|聊了|坐了一会儿|发呆|看电视|刷手机/.test(s)) return 30;
+  return 20;
+}
+/** 把本地时钟对齐到正文里写的绝对时间（只往前；离谱的退回最多一天） */
+function localAlignClockToStamp(s, text) {
+  const target = localParseClockStamp(text);
+  if (target === null) return 0;
+  const now = localMinutes(s);
+  const delta = target - now;
+  if (delta <= 0) return 0;
+  if (delta <= MINUTES_PER_DAY * 31) {
+    s.clock.minutes = target;
+    s.day = Math.floor(target / MINUTES_PER_DAY) + 1;
+    s.week = Math.floor(target / MINUTES_PER_WEEK) + 1;
+    return delta;
+  }
+  return localTick(s, MINUTES_PER_DAY);
+}
+/** 状态行归一：日期时间换成 want（空则不动），HP / 体力分母换成真上限。
+ *  和服务端 lib/rules.mjs 的 normalizeStampLine 同规则。只动【…】里面。 */
+function localNormalizeStamp(text, want, limits = {}) {
+  const src = String(text || '');
+  const m = /【[^】]{0,200}】/.exec(src);
+  if (!m) return src;
+  let blk = m[0];
+  let changed = false;
+  if (want) {
+    const after = blk.replace(/【\s*\d{2,4}\s*年\s*\d{1,2}\s*月\s*\d{1,2}\s*日[^|】]{0,12}?\|/, `【${want} |`);
+    if (after !== blk) { blk = after; changed = true; }
+  }
+  if (limits.maxHp > 0) {
+    const after = blk.replace(/(HP|生命|血量|气血)\s*[:：]?\s*(\d+)\s*\/\s*\d+/i, (s, k, cur) => `${k}:${cur}/${limits.maxHp}`);
+    if (after !== blk) { blk = after; changed = true; }
+  }
+  if (limits.maxSta > 0) {
+    const after = blk.replace(/(体力|耐力|精力|STA)\s*[:：]?\s*(\d+)\s*\/\s*\d+/i, (s, k, cur) => `${k}:${cur}/${limits.maxSta}`);
+    if (after !== blk) { blk = after; changed = true; }
+  }
+  return changed ? src.slice(0, m.index) + blk + src.slice(m.index + m[0].length) : src;
+}
+
 function localCountdown(s) {
   if (s.phase === 'mission') return { minutes: 0, slots: 0, days: 0, text: '主神任务进行中' };
   const left = Math.max(0, localDispatchAt(s) - localMinutes(s));
@@ -2234,13 +2575,20 @@ function localDispatchAt(s) {
   return s.missionAt;
 }
 
-/** 时间往前走。单位是分钟（旧调用传「格」也能用：<=4 的老调用按段换算）。 */
-function localTick(s, minutes = 1, skipToMission = false) {
-  if (s.phase === 'mission') return 0;
+/**
+ * 时间往前走。单位是分钟。
+ * cap 默认一天（那是给模型报的 advance 用的护栏）；
+ * 从正文措辞估算出的跨度（「几天后」）可以传更大的 cap。
+ */
+function localTick(s, minutes = 1, opt = {}) {
+  // 任务世界和中转站都不推进这个日历（它记的是「现实世界」的日子）
+  if (s.phase === 'mission' || s.phase === 'hub') return 0;
+  const skipToMission = opt === true || opt?.skipToMission === true;
+  const cap = opt?.cap || MINUTES_PER_DAY;
   const before = localMinutes(s);
   const step = skipToMission
     ? Math.max(0, localDispatchAt(s) - before)
-    : Math.max(0, Math.min(MINUTES_PER_DAY, Math.round(minutes) || 0));
+    : Math.max(0, Math.min(cap, Math.round(minutes) || 0));
   s.clock.minutes = before + step;
   s.day = Math.floor(s.clock.minutes / MINUTES_PER_DAY) + 1;
   s.week = Math.floor(s.clock.minutes / MINUTES_PER_WEEK) + 1;
@@ -2303,29 +2651,95 @@ function localSeedCanonNpcs(s) {
   for (const src of book.npcs) {
     const cur = s.worldState.npcs.find(x => x.name === src.name)
       || s.worldState.npcs.find(x => localSamePower(x, src));
+    // 世界书这版的指纹：只有它变了才刷新原著字段，否则每次推门都把玩家改过的东西冲掉
+    const lore = localLoreFingerprint(src);
     const fields = {
       identity: src.identity, role: src.role, gender: src.gender, age: src.age, race: src.race,
       faction: src.faction, appearance: src.appearance, traits: src.traits, voice: src.voice,
-      personality: src.personality, hook: src.hook, favorHint: src.favorHint, relations: src.relations,
-      canon: true, realm: work, seededFor: work, where: `${book.canon || book.name}·${s.mission.name || ''}`,
+      // ⚠ 模型报人物时用的字段名是 note（不是 personality）。
+      //   以前这里写的是 personality，于是网页模式里「性格」这一项永远是空的。
+      note: src.personality, hook: src.hook, favorHint: src.favorHint, relations: src.relations,
+      canon: true, realm: work, seededFor: work,
+      where: `${book.canon || book.name}·${s.mission.name || ''}`,
+      loreVersion: lore,
     };
-    if (cur) { Object.assign(cur, fields); }
-    else {
+    if (cur) {
+      // 已有记录：原著字段按世界书刷新，但**好感 / 记忆 / 备注永远是玩家的**
+      const changed = cur.loreVersion !== lore;
+      for (const [k, v] of Object.entries(fields)) {
+        if (v === undefined || v === null || v === '') continue;
+        if (changed || !cur[k]) cur[k] = v;
+      }
+      if (changed || !cur.traits?.length) cur.traits = [...(src.traits || [])];
+      if (changed || !cur.relations?.length) cur.relations = (src.relations || []).map(r => ({ ...r }));
+      cur.loreVersion = lore;
+    } else {
       s.worldState.npcs.push(Object.assign({
         name: src.name, favor: 0, metAt: s.turn || 0, lastSeen: s.turn || 0,
-        romanceable: null, romance: { stage: 'none', since: null, note: '' }, memories: [],
+        memories: [],
       }, fields));
       n++;
     }
   }
   return n;
 }
+
+/** 世界书人物档案的指纹（跟 lib/rules.mjs 的 loreFingerprint 同规则） */
+function localLoreFingerprint(c) {
+  const s = [
+    c.identity, c.role, c.gender, c.age, c.race, c.faction,
+    c.appearance, c.voice, c.personality, c.favorHint, c.hook,
+    (c.traits || []).join('、'),
+    (c.relations || []).map(r => `${r.name}:${r.label}`).join('；'),
+  ].map(x => String(x ?? '')).join('\u0001');
+  let h = 5381;
+  for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0;
+  return h.toString(36);
+}
+/* ── 等级经验（和服务端 lib/rules.mjs 的 gainRankExp 同规则）──
+   网页模式以前完全没有战绩结算：打完任务等级永远不动。
+   ⚠ missionsDone 由 localEndMission 加，这里**只加经验**，别重复计数。 */
+const LOCAL_RANKS = ['E', 'D', 'C', 'B', 'A', 'S', 'SS', 'SSS'];
+const LOCAL_RANK_VALUE = { E: 1, D: 2, C: 4, B: 8, A: 16, S: 32, SS: 64, SSS: 128 };
+const LOCAL_RANK_EXP = { E: 3, D: 7, C: 15, B: 31, A: 63, S: 127, SS: 255, SSS: Infinity };
+const localRankIndex = r => Math.max(0, LOCAL_RANKS.indexOf(String(r || 'E').toUpperCase()));
+
+function localGainRankExp(s, missionRank, success = true) {
+  const out = [];
+  const mr = localRankIndex(missionRank);
+  const my = localRankIndex(s.rank);
+  const base = LOCAL_RANK_VALUE[String(missionRank || 'E').toUpperCase()] || 1;
+  const over = mr - my;
+  const mult = !success ? 0.3 : over >= 2 ? 1.5 : over === 1 ? 1.2 : over === 0 ? 1 : 0.6;
+  const gain = Math.max(1, Math.round(base * mult));
+  s.rankExp = (s.rankExp || 0) + gain;
+  out.push(`战绩 +${gain}（${s.rankExp}/${LOCAL_RANK_EXP[s.rank]}）`);
+  let ups = 0;
+  while (s.rankExp >= (LOCAL_RANK_EXP[s.rank] ?? Infinity) && ups < 3) {
+    const i = localRankIndex(s.rank);
+    if (i >= LOCAL_RANKS.length - 1) break;
+    s.rankExp -= LOCAL_RANK_EXP[s.rank];
+    s.rank = LOCAL_RANKS[i + 1];
+    ups++;
+    out.push(`【等级提升】主神重新评定：${s.rank} 级被选中者`);
+  }
+  if (s.rankExp > (LOCAL_RANK_EXP[s.rank] ?? Infinity)) s.rankExp = LOCAL_RANK_EXP[s.rank] - 1;
+  return out;
+}
+
 function localEndMission(s) {
-  if (s.phase !== 'mission') return;
-  s.phase = 'life';
+  if (s.phase !== 'mission') return [];
+  const done = s.mission;
+  // 和服务端 R.endMission 一致：先回**中转站**，不是直接回现实。
+  // 以前这里写的是 'life'，于是网页模式结算完跳过中转站，
+  // 玩家既看不到面板、也没法挑下一个世界。
+  s.phase = 'hub';
   s.mission = null;
   s.missionAt = null;            // 下一次任务重新掷派发时刻（服务端同规则）
-  localTick(s, MINUTES_PER_DAY);
+  s.missionsDone = (s.missionsDone || 0) + 1;
+  s.dungeon = null;
+  if (s.status !== 'dead') { s.status = 'alive'; s.hp = s.maxHp; s.sta = s.maxSta; }
+  return localGainRankExp(s, done?.rank, true);
 }
 
 /**
@@ -2478,14 +2892,26 @@ function renderStateInner(s) {
   // ── 顶部时间条 ──
   if ($('topClockTime')) {
     const inM = s.phase === 'mission';
-    const soon = !inM && (s.countdownDays ?? 9) <= 1;
+    const inHub = s.phase === 'hub';
+    const soon = !inM && !inHub && (s.countdownDays ?? 9) <= 1;
     $('topClockTime').textContent = s.clockText || '26年1月1日 06:00';
-    $('topClockPhase').textContent = inM ? '主神任务中' : '现实生活';
-    $('topClockPhase').className = `tc-phase${inM ? ' on-mission' : ''}`;
+    $('topClockPhase').textContent = inM ? '主神任务中' : inHub ? '主神空间' : '现实生活';
+    $('topClockPhase').className = `tc-phase${inM ? ' on-mission' : ''}${inHub ? ' on-hub' : ''}`;
     $('topClockCd').textContent = inM
       ? (s.mission?.name ? `「${s.mission.name}」` : '任务进行中')
-      : (s.countdownText || '');
+      : inHub
+        ? '随时可以推门'
+        : (s.countdownText || '');
     $('topClockCd').className = `tc-cd${soon ? ' soon' : ''}`;
+    // 任务里 / 中转站里，日历是冻住的 —— 直接把话说出来，别让玩家以为时钟坏了
+    const fz = $('topClockFrozen');
+    if (fz) {
+      fz.hidden = !(inM || inHub);
+      fz.textContent = inM ? '⏸ 现世时间暂停' : '⏸ 这里不数日子';
+      fz.title = inM
+        ? '你正在任务世界里。左上角那个日历记的是现实世界的日子，回到现实才会继续走。'
+        : '主神空间是个站台，不是世界。出站回现实之后，日子才会继续。';
+    }
     const tc = $('topClock');
     if (tc) tc.classList.toggle('soon', soon);
   }
@@ -2602,8 +3028,10 @@ function renderStateInner(s) {
   }
   if ($('questGoal')) {
     $('questGoal').textContent = s.phase === 'mission'
-      ? ''
-      : `距离下一次主神任务 ${s.countdownText || '—'}`;
+      ? '任务世界里，现世的时间是暂停的 —— 回去之后日子接着走'
+      : s.phase === 'hub'
+        ? '主神空间不数日子 —— 出站回现实，时间才会继续'
+        : `距离下一次主神任务 ${s.countdownText || '—'}`;
   }
   if ($('worldProgBar')) {
     // 进度条改成「离任务还有多久」：0% = 刚回来，100% = 该出发了
@@ -2635,6 +3063,29 @@ function renderStateInner(s) {
     if (!list.length) nm.innerHTML = '<div class="empty" style="font-size:11px">还没遇到值得记住的人</div>';
   }
 
+  // ── 侧栏装备区 ──
+  // 以前侧栏只有背包、装备要看弹窗才知道穿了什么。这里把六个栏位压成一行一个，
+  // 背包则默认收起 —— 背包东西一多（实测 30+ 件）会把整个侧栏撑满。
+  const eq = $('equipList');
+  if (eq) {
+    const slots = d?.equipSlots || [];
+    const slotNames = d?.equipSlotNames || {};
+    const findGear = id => id
+      ? (d?.equipment || []).find(x => x.id === id) || (s.inventory || []).find(x => x.id === id)
+      : null;
+    eq.innerHTML = slots.map(sl => {
+      const it = findGear(s.equipment?.[sl]);
+      const rc = it ? (d?.rarities?.[it.rarity]?.color || '#2a2a3d') : '#2a2a3d';
+      return `<div class="eq-row${it ? ' has' : ''}" style="--rc:${rc}">
+        <span class="eq-sl">${esc(slotNames[sl] || sl)}</span>
+        <span class="eq-nm">${it ? esc(it.name) : '<i>空</i>'}</span>
+      </div>`;
+    }).join('') || '<div class="empty" style="font-size:11px">—</div>';
+    const cnt = slots.filter(sl => s.equipment?.[sl]).length;
+    const ec = $('equipCount');
+    if (ec) ec.textContent = slots.length ? `${cnt} / ${slots.length}` : '';
+  }
+
   const inv = $('invList');
   if (s.inventory.length) {
     const invSorted = [...s.inventory].sort((a, b) => {
@@ -2647,6 +3098,9 @@ function renderStateInner(s) {
     ).join('') + (s.inventory.length > 14 ? `<span class="chip more" onclick="UI.openInventory()">+${s.inventory.length - 14} 件…</span>` : '');
     $('invCount').textContent = `${s.inventory.length} 件`;
   } else { inv.innerHTML = '<span class="empty">空空如也</span>'; $('invCount').textContent = ''; }
+
+  // 背包默认收起（记在本地，玩家展开过就保持展开）
+  UI.applyInvCollapse();
 
   const sk = $('skillList');
   const allSkills = [...(s.skills || []), ...(s.bloodlines || [])];
@@ -2709,7 +3163,10 @@ function renderMessages(list) {
     } else if (m.role === 'gm') {
       const d = document.createElement('div');
       d.className = 'msg gm';
-      const { body } = splitOptions(m.content);
+      // ⚠ 必须 stripState：存档里存的是**完整原文**（含 <<<STATE>>> 状态块，
+      //   服务端和本地模式都是），显示的时候要把它剥掉，否则刷新页面后
+      //   一大段 JSON 会明晃晃地留在正文里。
+      const { body } = splitOptions(stripState(m.content));
       d.innerHTML = `<div class="body">${formatGm(body)}</div>`;
       box.appendChild(d);
     } else {
@@ -2743,13 +3200,25 @@ function renderMessages(list) {
  *
  * 先 esc 再替换，所以这里的模式要匹配**转义后**的样子（`>` 已经变成 `&gt;`）。
  * 支持的语法刻意很少 —— 模型最爱用的那几种：块引用、粗体、斜体、行内代码、围栏代码。
- * 以前只处理 `**粗体**`，于是模型写的 `> **状态**：休眠` 会把 `>` 和 `**` 原样显示出来。
+ *
+ * 另外还识别**叙事配色**用的三类元素（设置里的「环境青、对话金、心理紫」）：
+ *   · 对话 `.gm-say`   —— 引号里的内容（「」""''『』）
+ *   · 心理 `.gm-think` —— 括号里的心声（（）〔〕）
+ *   · 环境 `.gm-env`   —— 其余旁白（由 CSS 给底色，靠 body 上的类切换）
+ * ⚠ 这段以前**根本不存在**：设置里写着「对话金、心理紫」，但 formatGm 从来不给
+ *   对话加类名，所以那两项是空头支票，正文里对话和旁白一个颜色。
  */
 function formatGm(text) {
   let html = esc(text);
-  // 围栏代码块（```lang ... ```）：整体包起来，里面不再解析其它语法
+
+  // 围栏代码块先抽出来，避免里面的引号被当成对话
+  const vault = [];
+  const stash = s => { vault.push(s); return `\u0000${vault.length - 1}\u0000`; };
+
   html = html.replace(/```([a-z]*)\n([\s\S]*?)```/g,
-    (_, lang, code) => `<pre class="gm-code"><code>${code.replace(/\n$/, '')}</code></pre>`);
+    (_, lang, code) => stash(`<pre class="gm-code"><code>${code.replace(/\n$/, '')}</code></pre>`));
+  html = html.replace(/`([^`\n]+?)`/g, (_, code) => stash(`<code class="gm-inline">${code}</code>`));
+
   // 行首的引用块：连续的 &gt; 行合成一个 <blockquote>
   html = html.replace(/(?:^|\n)(?:&gt;[ \t]?.*(?:\n|$))+/g, m => {
     const body = m.replace(/\n$/, '').split('\n')
@@ -2761,7 +3230,17 @@ function formatGm(text) {
   html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
   // 斜体放在粗体之后，避免 ** 被当成两个 *
   html = html.replace(/(^|[^*\w])\*([^*\n]+?)\*(?![*\w])/g, '$1<em>$2</em>');
-  html = html.replace(/`([^`\n]+?)`/g, '<code class="gm-inline">$1</code>');
+
+  // ── 对话 / 心理（在加粗斜体之后，这样它们里面的 ** 已经变成标签了）──
+  // 只匹配成对的引号，不跨段（不跨空行），免得把整篇吞掉
+  html = html.replace(/「([^「」\n]{1,400})」/g, '<span class="gm-say">「$1」</span>');
+  html = html.replace(/『([^『』\n]{1,400})』/g, '<span class="gm-say">『$1』</span>');
+  html = html.replace(/“([^“”\n]{1,400})”/g, '<span class="gm-say">“$1”</span>');
+  html = html.replace(/（([^（）\n]{1,200})）/g, '<span class="gm-think">（$1）</span>');
+  html = html.replace(/〔([^〔〕\n]{1,200})〕/g, '<span class="gm-think">〔$1〕</span>');
+
+  // 把代码块放回去
+  html = html.replace(/\u0000(\d+)\u0000/g, (_, i) => vault[Number(i)] || '');
   return html;
 }
 
@@ -3161,9 +3640,9 @@ const UI = {
       <div class="field">
         <label>预览</label>
         <div class="read-preview" id="readPreview">
-          <div class="state-line" style="color:var(--nar-state);font-family:var(--mono);font-size:12.5px">【26年1月3日 15:00 | 积分:500 | ¥2,840 | HP:100 | 体力:100】</div>
+          <div class="state-line">【26年1月3日 15:00 | 积分:500 | ¥2,840 | HP:100 | 体力:100】</div>
           <p>灰雾在你面前缓缓流动。<strong>远处传来钟声</strong>，敲了七下就停了。</p>
-          <p>「你来得比我预想的早。」那人转过身来，<em>手里的东西已经被血浸透了</em>。</p>
+          <p><span class="gm-say">「你来得比我预想的早。」</span>那人转过身来，<span class="gm-think">（他数过我的脚步。）</span></p>
         </div>
       </div>
       <div class="cd-hint">阅读设置立刻生效，不用点保存。</div>`;
@@ -3205,6 +3684,27 @@ const UI = {
         API Key 也存在浏览器里，且浏览器直连厂商接口可能被 CORS 拦截。
         想要更稳的体验和多端同步，请把 <b>public/</b> 用本地服务器打开（见「高级 → 网页模式」）。
       </div>`}
+      ${isServer && Backend.guestMode ? `<div class="result err" style="margin-bottom:14px">
+        ⚠ 你现在用的是<b>自己填的那份接口</b>，不是这台服务器配好的那个。<br>
+        当前：<code>${esc(c.providerLabel || c.provider || '')}</code>${c.model ? ` · <code>${esc(c.model)}</code>` : ''}
+        ${c.apiKey ? `<br>Key：<code>${esc(String(c.apiKey).slice(0, 10))}…${esc(String(c.apiKey).slice(-4))}</code>` : '<br>（没有 Key）'}<br>
+        <span class="desc">如果一直报「无效的令牌 / 401 / 余额不足」，问题多半在这把 Key 上。</span>
+        <div class="row2" style="margin-top:9px">
+          <button class="btn" id="cfgUseServer">↩ 改回用这台服务器配好的接口</button>
+        </div>
+      </div>` : ''}
+      ${isServer ? `<div class="field">
+        <label>走哪条线路</label>
+        <div class="row2">
+          <button class="btn ghost" id="cfgUseRelay">🏠 用这台服务器自带的接口（推荐）</button>
+          <button class="btn ghost" id="cfgUseOwnKey">🔑 用我自己的 API Key</button>
+        </div>
+        <div class="desc" id="relayHint">
+          ${Backend.guestMode
+        ? '当前：<b>你自己的 Key</b>（直连你填的那个接口）'
+        : '当前：<b>服务器自带</b>（用这台机器上配好的接口和额度）'}
+        </div>
+      </div>` : ''}
       <div class="field">
         <label>叙事引擎</label>
         <select id="cfgProvider">${provOptions}</select>
@@ -3270,7 +3770,7 @@ const UI = {
           装备 ${(D()?.equipment || []).length} 件 ·
           出身 ${(D()?.origins || []).length} 种 · 天赋 ${(D()?.talents || []).length} 个<br>
           运行模式：${isServer ? '完整模式（本地服务器）' : '网页模式（纯前端）'}<br>
-          构建：<code>${esc(D()?.build || '未知')}</code> · <code>${esc(D()?.buildVer || '')}</code>
+          构建：<code>${esc(D()?.build || '未知')}</code>${D()?.buildVer ? ` · <span class="desc">版本 ${esc(D().buildVer)}</span>` : ''}
           ${(window.GAME_WORLDBOOKS || []).length ? '' : '<br><span style="color:var(--hp)">⚠ worldbooks.js 没加载 —— 网页模式不会注入世界书，记得一起上传</span>'}
         </div>
       </div>`;
@@ -3307,6 +3807,10 @@ const UI = {
         ${['game', 'api'].includes(st.tab) ? '<button class="btn" id="cfgSave">保存</button>' : ''}`,
       onMount: ov => {
         const redraw = () => UI.openSettings({ tab: UI._cfg.tab });
+        // 本次设置面板是否处于「要用自己的 Key」模式。
+        // 只有它为 true 时，collect() 才会把输框里的 Key 存下来 ——
+        // 否则「改回服务器」之后，输框残留的旧 Key 又会被写回去（一直 401 出不来）。
+        let OV_OWN_KEY = Boolean(Backend.guestMode);
 
         /* ── 标签切换 ── */
         ov.querySelectorAll('[data-stab]').forEach(b => b.onclick = () => { UI._cfg.tab = b.dataset.stab; redraw(); });
@@ -3349,6 +3853,38 @@ const UI = {
           applyPrefs();
           toast('已恢复默认（只影响界面与阅读）', 'ok');
           redraw();
+        };
+
+        /* ── 「走哪条线路」开关 ──
+           必须放在设置页：向导第 0 步在「已经有可用接口」时会被整个跳过，
+           玩家一旦填错 Key，不从这里就再也出不来（会一直吃 401）。
+           实测踩过的坑：只清 localStorage 不清内存里的 cfg，界面看着没变化。 */
+        const useServerBtn = ov.querySelector('#cfgUseServer');
+        const useRelayBtn = ov.querySelector('#cfgUseRelay');
+        const useOwnBtn = ov.querySelector('#cfgUseOwnKey');
+        /**
+         * 切回「用服务器配好的接口」。
+         * ⚠ 光清 localStorage 不够 —— 输框里还留着那把旧 Key，
+         *   下次点「保存设置」时 collect() 又把它写回 mid_guest_api_v1，
+         *   于是「点了开关还是 401」。所以这里必须**连输框一起清空**。
+         */
+        const backToServer = async () => {
+          await Backend.useServerApi();     // ← 清 localStorage + 重建 cfg
+          OV_OWN_KEY = false;               // ← 关掉「用我自己的 Key」模式
+          const kb = ov.querySelector('#cfgKey');
+          if (kb) kb.value = '';            // ← 关键：别让旧 Key 被重新保存
+          const kdesc = ov.querySelector('#keyDesc');
+          if (kdesc) kdesc.textContent = '已切回服务器自带的接口，这里不用填。';
+          toast('已改回用这台服务器配好的接口', 'ok');
+          redraw();
+        };
+        if (useServerBtn) useServerBtn.onclick = backToServer;
+        if (useRelayBtn) useRelayBtn.onclick = backToServer;
+        if (useOwnBtn) useOwnBtn.onclick = () => {
+          OV_OWN_KEY = true;                // 玩家明确要用自己的 → 允许保存
+          const kb = ov.querySelector('#cfgKey');
+          if (kb) { kb.value = ''; kb.focus(); }
+          toast('在下面填你自己的接口地址和 Key，保存后生效', 'ok');
         };
 
         /* ── API（沿用原来的联动逻辑）── */
@@ -3408,7 +3944,9 @@ const UI = {
             patch.temperature = Number(g('#cfgTemp').value);
             patch.maxTokens = Number(g('#cfgMax').value);
             const kv = g('#cfgKey').value.trim();
-            if (kv) patch.apiKey = kv;
+            // ⚠ 只有在「明确要用自己的 Key」时才把 Key 带上。
+            //   否则点了「改回服务器」之后，输框里残留的旧 Key 又会被存回去 —— 一直 401 出不来。
+            if (kv && OV_OWN_KEY) patch.apiKey = kv;
           }
           if (g('#cfgWin')) patch.historyWindow = Number(g('#cfgWin').value);
           if (g('#cfgSettle')) patch.stateSettle = g('#cfgSettle').value;
@@ -3598,7 +4136,7 @@ Game.useItem = async function (itemId) {
   const d = window.GAME_DATA;
   const inv = (this.state.inventory || []).find(i => i.id === itemId || i.name === itemId);
   const def = d?.equipment.find(x => x.id === (inv?.id || itemId));
-  const equippable = def && ['weapon', 'offhand', 'armor', 'accessory'].includes(def.slot);
+  const equippable = def && Boolean(SLOT_ACCEPTS()[def.slot]);
   try {
     const r = equippable
       ? await Backend.equip(this.saveId, itemId, this.state)

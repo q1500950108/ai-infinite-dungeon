@@ -122,8 +122,15 @@
     </div>
 
     <div class="section">
-      <h2>背包 <span class="mini" id="invCount"></span></h2>
-      <div class="chips" id="invList"><span class="empty">空空如也</span></div>
+      <h2>装备 <span class="mini" id="equipCount"></span></h2>
+      <div class="equip-mini" id="equipList"></div>
+    </div>
+
+    <div class="section">
+      <h2 class="sec-fold" id="invToggle" onclick="UI.toggleInv()" title="点一下展开 / 收起">
+        <span>背包 <span class="mini" id="invCount"></span></span><span class="caret" id="invCaret">▸</span>
+      </h2>
+      <div class="chips collapsed" id="invList"><span class="empty">空空如也</span></div>
     </div>
 
     <div class="section">
@@ -154,6 +161,9 @@
         <span class="tc-time" id="topClockTime">26年1月1日 06:00</span>
         <span class="tc-phase" id="topClockPhase">现实生活</span>
         <span class="tc-cd" id="topClockCd">还有 7 天</span>
+        <!-- 任务进行中时，这里的日历是**冻住的**（那是现实世界的日子）——
+             不说明的话玩家会以为时钟坏了 -->
+        <span class="tc-frozen" id="topClockFrozen" hidden>⏸ 现世时间暂停</span>
       </span>
       <div class="spacer"></div>
       <!-- 当前任务徽章：点了开任务面板。侧栏那块删掉之后，任务还得一眼看得到 -->
