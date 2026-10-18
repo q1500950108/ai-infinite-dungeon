@@ -1856,6 +1856,20 @@ const Game = {
     bindRail();
     bindSidebar();
     bindTopActions();
+
+    // ⚠ 静态托管（GitHub Pages / Netlify）时，Backend.detect() 会连续失败 3 次、
+    //   每次之间要等一会儿（那是为了「服务器刚起来时别误判成网页模式」），
+    //   再加上下载 300KB 的 gamedata.js —— 首次访问要对着空白外壳等 4~6 秒。
+    //   开始页的内容本来就是写死在 index.html 里的，所以这里先把它立起来，
+    //   后面的 showLanding() 只负责把引擎名、存档数这些细节填进去。
+    //   只在**没有存档**时这么做：有存档的话 boot 会直接进游戏，不该闪一下开始页。
+    let hasSave = true;
+    try { hasSave = Object.keys(JSON.parse(localStorage.getItem(LS_KEY) || '{}')).length > 0; } catch { hasSave = false; }
+    if (!hasSave && typeof UI.showLanding === 'function') {
+      const ld0 = document.getElementById('landing');
+      if (ld0) { ld0.classList.add('show'); document.body.classList.add('landing-open'); }
+    }
+
     await loadGameData();
     await Backend.detect();
     await Backend.getConfig();
