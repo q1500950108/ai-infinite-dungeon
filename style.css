@@ -1487,6 +1487,11 @@ body.landing-open { overflow: hidden; }
 .inv-row .ir-nm .eq { font-size: 10px; color: var(--ok); border: 1px solid rgba(61, 220, 132, .35); border-radius: 4px; padding: 0 5px; }
 .inv-row .ir-ds { font-size: 11px; color: var(--muted); margin-top: 3px; }
 .inv-row .ir-act { display: flex; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; }
+/* 消耗品：「使用后：HP +35 体力 +30」—— 和装备属性（HP上限 +3）明确区分开 */
+.inv-row .st-row.ir-use {
+  display: flex; flex-wrap: wrap; gap: 8px;
+  margin-top: 4px; font-size: 11.5px; color: var(--ok, #3ddc84); opacity: .92;
+}
 
 /* ── 骰子判定卡 ── */
 .check-card {

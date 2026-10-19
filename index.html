@@ -10,17 +10,27 @@
 </head>
 <body>
 <script>
-/* 首次访问（这个浏览器里没有任何存档）：在 app.js 下载完之前就把开始页显示出来。
-   页面底下要加载 gamedata.js(331KB) + app.js(200KB) + panels.js(127KB)，
-   在手机网络下那几秒是一片空白 —— 开始页的内容本来就写死在这个文件里，
-   没必要等脚本。给 <html> 加一个 no-save，样式表里对应地把开始页放出来。
-   有存档的玩家不受影响（boot 会直接进游戏，也不会先闪一下开始页）。 */
+/* 静态托管（GitHub Pages / Netlify）下：这个浏览器没有存档时，在 app.js 下载完之前
+   就把开始页画出来。底下要加载 gamedata.js(331KB)+app.js(200KB)+panels.js(127KB)，
+   手机网络下那几秒是一片空白，而开始页的内容本来就写死在这个文件里。
+   ⚠ 只对「远程静态托管 / 直接双击打开」有效：
+     本地服务器模式（localhost / 局域网 IP）下存档在服务器上、localStorage 是空的，
+     按 localStorage 判断会误判成首次访问，开始页会一直压在游戏上面。
+   boot 里探测到服务器之后也会再摘一次这个 class 兜底。 */
 (function () {
   try {
+    var host = location.hostname || '';
+    var isFile = location.protocol === 'file:';
+    var mayHaveServer = !isFile && (
+      host === 'localhost' || host === '::1' || host === '0.0.0.0'
+      || /^127\./.test(host) || /^192\.168\./.test(host)
+      || /^10\./.test(host) || /^172\.(1[6-9]|2\d|3[01])\./.test(host)
+    );
+    if (mayHaveServer) return;
     var n = Object.keys(JSON.parse(localStorage.getItem('mid_saves_v1') || '{}')).length;
     if (!n) document.documentElement.classList.add('no-save');
   } catch (e) {
-    document.documentElement.classList.add('no-save');
+    /* 隐私模式之类读不到就算了，走原来的流程 */
   }
 })();
 </script>

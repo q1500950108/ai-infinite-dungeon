@@ -1607,15 +1607,36 @@ function localUse(save, itemId) {
   const d = window.GAME_DATA;
   const def = d?.equipment.find(x => x.id === inv.id);
   const eff = def?.effect || inv.effect;
-  if (!eff || (!eff.hp && !eff.sta && !eff.score)) {
+  // permanent 也算「能在界面上用」（和服务端 R.useItem 同规则）
+  if (!eff || (!eff.hp && !eff.sta && !eff.score && !eff.permanent)) {
     return { ok: false, msg: `「${inv.name}」要在剧情里用，先描述你怎么用它。` };
   }
+  const before = { hp: save.hp, sta: save.sta, score: save.score, maxHp: save.maxHp, maxSta: save.maxSta };
   const ch = [];
-  if (eff.hp) { const b = save.hp; save.hp = Math.max(0, Math.min(save.maxHp, save.hp + eff.hp)); ch.push(`HP +${save.hp - b}`); }
-  if (eff.sta) { const b = save.sta; save.sta = Math.max(0, Math.min(save.maxSta, save.sta + eff.sta)); ch.push(`体力 +${save.sta - b}`); }
+  if (eff.hp) {
+    save.hp = Math.max(0, Math.min(save.maxHp, save.hp + eff.hp));
+    const got = save.hp - before.hp;
+    ch.push(`HP +${got}${got === 0 ? '（已满）' : ''}`);
+  }
+  if (eff.sta) {
+    save.sta = Math.max(0, Math.min(save.maxSta, save.sta + eff.sta));
+    const got = save.sta - before.sta;
+    ch.push(`体力 +${got}${got === 0 ? '（已满）' : ''}`);
+  }
   if (eff.score) { save.score += eff.score; ch.push(`积分 +${eff.score}`); }
   if (eff.permanent?.maxHp) { save.baseHp = (save.baseHp ?? 100) + eff.permanent.maxHp; ch.push(`HP 上限 +${eff.permanent.maxHp}`); }
   if (eff.permanent?.maxSta) { save.baseSta = (save.baseSta ?? 100) + eff.permanent.maxSta; ch.push(`体力 上限 +${eff.permanent.maxSta}`); }
+
+  // 一点都没变（都满着）→ 不消耗，说清楚原因（和服务端一致）
+  const changed = save.hp !== before.hp || save.sta !== before.sta
+    || save.score !== before.score || save.maxHp !== before.maxHp || save.maxSta !== before.maxSta;
+  if (!changed) {
+    return {
+      ok: false,
+      msg: `现在用不上「${inv.name}」：HP 和体力都是满的（${save.hp}/${save.maxHp}　${save.sta}/${save.maxSta}），先留着吧。`,
+    };
+  }
+
   inv.qty -= 1;
   if (inv.qty <= 0) save.inventory = save.inventory.filter(i => i !== inv);
   if (save.status === 'spent' && save.sta > save.maxSta * 0.3) save.status = 'alive';
@@ -1859,6 +1880,10 @@ const Game = {
 
     await loadGameData();
     await Backend.detect();
+    // 「没有存档就把开始页先画出来」这个提前量只对静态托管有意义（那里的存档在 localStorage）。
+    // 完整模式的存档在服务器上、localStorage 是空的 —— 一旦探测到有服务器，立刻摘掉，
+    // 不然开始页会压在游戏上面，而且 showLanding() 不会跑，两个模式徽章会永远停在「检测中」。
+    if (Backend.mode === 'server') document.documentElement.classList.remove('no-save');
     await Backend.getConfig();
     applyBranding();
 
@@ -1892,6 +1917,11 @@ const Game = {
     this.state = state;
     this.messages = messages || [];
     localStorage.setItem(LS_CUR, id);
+    // ⚠ 载入存档就一定要把开始页收掉。
+    //   index.html 的内联脚本会在「localStorage 里没有存档」时提前把开始页画出来
+    //   （静态托管下能省好几秒白屏），但**完整模式的存档在服务器上**，
+    //   localStorage 是空的 —— 不收掉的话开始页会一直压在上面。
+    UI.hideLanding();
     renderState(state);
     renderMessages(this.messages);
     renderSaves(await Backend.listSaves());
@@ -2077,6 +2107,30 @@ const Game = {
       if ((PROVIDERS[cfg.provider] || {}).needsKey && !cfg.apiKey) throw new Error('这个厂商需要 API Key，请在「设置」里填写。');
     }
 
+    // ── 中转站里的「出站 / 推门」：玩家在正文里说出来也要算数 ──
+    // 网页模式以前只有界面按钮能换阶段，玩家打字说「我出站回现实」时
+    // 状态还停在 hub —— 顶栏一直显示「主神空间」，看着就像卡死在里面。
+    // 必须在拼提示词**之前**改，这样 AI 拿到的就是新阶段。
+    if (this.state.phase === 'hub') {
+      const a = String(action || '');
+      const wantLeave = /出站|回现实|回(?:到)?(?:家|自己的?生活)|离开这|不去了/.test(a)
+        && !/推门|那扇门|进任务/.test(a);
+      const wantDepart = /推门|那扇门|进任务|进那扇门|去(?:那个|这个|下一个|另一个)?世界/.test(a);
+      if (wantLeave) {
+        this.state.phase = 'life';
+        this.state.missionAt = null;
+        this.addSystem('【出站】你回到了现实生活。下一次被主神拉走的时间重新开始数。', 'good');
+      } else if (wantDepart) {
+        const work = this.state.pendingWork || '';
+        localStartMission(this.state, {});
+        if (work) this.state.mission = { ...(this.state.mission || {}), work };
+        this.state.pendingWork = null;
+        this.state.phase = 'mission';
+        this.addSystem(`【主神任务】《${this.state.mission?.work || '未知'}》—— 你推门进去了。`, 'good');
+        this._put(this.state);
+      }
+    }
+
     // 纯前端模式的提示词要自己拼，这时才需要人物档案包
     const prompt = await Backend.getPrompt();
     const sys = prompt.includes('<<<STATE') ? prompt : `${prompt}\n\n${STATE_PROTOCOL}`;
@@ -2139,6 +2193,17 @@ const Game = {
     }
     if (!resp.ok) {
       const t = await resp.text();
+      // 401/403 在网页版里几乎只有一个原因：这个浏览器里存的那份接口配置
+      // （baseUrl / key）已经失效了 —— 换过接口、或者那把 key 被停用。
+      // 光甩一串原始 JSON 没人看得懂，这里直接把出路写出来。
+      if (resp.status === 401 || resp.status === 403) {
+        throw new Error(
+          `接口拒绝了这次请求（HTTP ${resp.status}）：当前用的 key 无效或已失效。\n`
+          + `现在连的是：${cfg.baseUrl}　模型：${cfg.model}\n`
+          + '去右上角「设置」→「接口与设置」里换一把能用的 key（地址、模型要跟 key 配套）。\n'
+          + `原始返回：${t.slice(0, 160)}`,
+        );
+      }
       throw new Error(`接口返回 HTTP ${resp.status}：${t.slice(0, 240)}`);
     }
 
@@ -2364,7 +2429,11 @@ ${m.brief ? `简报：${m.brief}` : ''}
    你**不要**自己开始写任务世界的内容 —— 等他真的进去了再写。
 玩家的积分是 ${(save.score || 0).toLocaleString()}。
 **语气**：主神不解释、不安慰、不鼓励，只派活和收账。可以借一个冷淡但熟悉流程的声音
-把规矩交代清楚，然后给他 3~5 个具体的选项（看面板 / 挑一个地方 / 去兑换 / 推门 / 出站）。`;
+把规矩交代清楚，然后给他 3~5 个具体的选项（看面板 / 挑一个地方 / 去兑换 / 推门 / 出站）。
+
+**阶段切换由系统接管**：玩家只要说「推门」「出站」「回现实」（或者界面按钮），
+系统就会真的把阶段切过去。你**不要**替他把状态改了 —— 也不要在这一轮就写
+"他推开门，眼前是任务世界" 或 "他回到了家里"。等系统切完，下一轮再写那里的样子。`;
   }
   const cd = localCountdown(save);
   if (cd.minutes === 0) {
@@ -2376,6 +2445,11 @@ ${m.brief ? `简报：${m.brief}` : ''}
   return `[当前阶段] 现实生活　｜　现在是「${now}」　｜　距离下一次主神任务 ${cd.text}
 玩家现在在过自己的日子。**不要催他去做任务**，也不要在叙事里反复提倒计时 ——
 让日常自己长出来。只有当玩家主动问起、或者「不对劲」的事发生时，才让主神的影子露一下。
+
+**现实里不会有任务。** 不要在这阶段写"主神派了个任务""你被扔进某个世界""任务简报"之类的东西 ——
+玩家明确要求过：现实就是过日子，不能被任务打断。倒计时到了是**你先把他拉进中转站**，
+在那之前任务世界连边都不该露。
+
 时间按剧情走：这轮剧情实际花了多久，就在状态块里报多少分钟的 advance。`;
 }
 
@@ -3811,7 +3885,12 @@ const UI = {
         // 本次设置面板是否处于「要用自己的 Key」模式。
         // 只有它为 true 时，collect() 才会把输框里的 Key 存下来 ——
         // 否则「改回服务器」之后，输框残留的旧 Key 又会被写回去（一直 401 出不来）。
-        let OV_OWN_KEY = Boolean(Backend.guestMode);
+        //
+        // ⚠ 网页模式（静态托管）**必须**是 true：那里没有「服务器上配好的 Key」可退回，
+        //   玩家填的就是唯一那把。以前写死成 guestMode —— 而 guestMode 只有服务器模式
+        //   才会被置 true，于是网页版里「API Key」那一栏填什么都会被丢掉，
+        //   表现就是「改了十次 key 还是 401」。
+        let OV_OWN_KEY = Backend.mode !== 'server' || Boolean(Backend.guestMode);
 
         /* ── 标签切换 ── */
         ov.querySelectorAll('[data-stab]').forEach(b => b.onclick = () => { UI._cfg.tab = b.dataset.stab; redraw(); });
@@ -3945,9 +4024,10 @@ const UI = {
             patch.temperature = Number(g('#cfgTemp').value);
             patch.maxTokens = Number(g('#cfgMax').value);
             const kv = g('#cfgKey').value.trim();
-            // ⚠ 只有在「明确要用自己的 Key」时才把 Key 带上。
-            //   否则点了「改回服务器」之后，输框里残留的旧 Key 又会被存回去 —— 一直 401 出不来。
-            if (kv && OV_OWN_KEY) patch.apiKey = kv;
+            // 只要输入框里的 key 和已存的不一样，就必须采用它 —— 否则换了 key
+            // 也会退回到旧的那把，表现就是「一直 401 改不动」。
+            const savedKey = String((Backend.cfg || {}).apiKey || '');
+            if (kv && (OV_OWN_KEY || kv !== savedKey)) patch.apiKey = kv;
           }
           if (g('#cfgWin')) patch.historyWindow = Number(g('#cfgWin').value);
           if (g('#cfgSettle')) patch.stateSettle = g('#cfgSettle').value;

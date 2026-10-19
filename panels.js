@@ -1422,11 +1422,29 @@ UI.openInventory = function () {
     const rarity = it.rarity || def?.rarity || 'common';
     const usable = usableOf(it);
     const eqName = { head: '头部', weapon: '主武器', offhand: '副手', armor: '护甲', accessory: '饰品', consumable: '消耗品' }[slot] || '';
+    // ⚠ 消耗品不要显示装备那套属性（"HP上限 +3"），那会让人以为**用了就加上限**。
+    //   玩家看到「HP上限+3」点使用、结果只回了血还被上限截断 —— 就觉得"没效果"。
+    //   这里改成直接写「使用后：HP +35 体力 +30」。
+    const eff = it.effect || def?.effect;
+    const effText = (() => {
+      if (!eff) return '';
+      const parts = [];
+      if (eff.hp) parts.push(`HP +${eff.hp}`);
+      if (eff.sta) parts.push(`体力 +${eff.sta}`);
+      if (eff.score) parts.push(`积分 +${eff.score}`);
+      if (eff.permanent?.maxHp) parts.push(`HP 上限 +${eff.permanent.maxHp}`);
+      if (eff.permanent?.maxSta) parts.push(`体力 上限 +${eff.permanent.maxSta}`);
+      return parts.join('　');
+    })();
+    const isConsumable = slot === 'consumable';
+    const statBlock = (isConsumable && effText)
+      ? `<div class="st-row ir-use">使用后：${effText}</div>`
+      : (Object.keys(stats).length ? `<div class="st-row">${statLine(stats)}</div>` : '');
     return `<div class="inv-row" style="--rc:${RARITY(rarity).color}">
             <div class="ir-main">
               <div class="ir-nm">${rarTag(rarity)}<b>${esc(it.name)}</b>${it.qty > 1 ? `<span class="q">×${it.qty}</span>` : ''}${equippedIds.has(it.id) ? '<span class="eq">已装备</span>' : ''}${it.source === 'story' ? '<span class="q" title="剧情里得到的">剧情</span>' : ''}</div>
               <div class="ir-ds">${esc(it.desc || def?.desc || '')}${eqName && equippable ? `<span class="ir-slot">${eqName}</span>` : ''}</div>
-              ${Object.keys(stats).length ? `<div class="st-row">${statLine(stats)}</div>` : ''}
+              ${statBlock}
               ${it.perk || def?.perk ? `<div class="ir-pk">▸ ${esc(it.perk || def?.perk)}</div>` : ''}
             </div>
             <div class="ir-act">
@@ -1502,7 +1520,11 @@ UI.openInventory = function () {
         if (r?.state) Game.state = { ...Game.state, ...r.state, messages: undefined };
         else await Game.load(Game.saveId);
         renderState(Game.state);
-        if (r?.msg) { Game.addSystem(r.msg, 'good'); toast(r.msg, 'ok'); }
+        // 用不上（比如血和体力都满）不是成功 —— 别用绿色对勾骗玩家
+        if (r?.msg) {
+          if (r.ok) { Game.addSystem(r.msg, 'good'); toast(r.msg, 'ok'); }
+          else toast(r.msg, 'warn');
+        }
         UI.openInventory();
       };
       ov.querySelectorAll('[data-equip]').forEach(b => b.onclick = async () => {
