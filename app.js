@@ -182,7 +182,11 @@ function visibleFlags(s) {
 function applyDelta(save, d) {
   const events = [];
   if (!d || typeof d !== 'object') return events;
-  if (d.score) save.score = Math.max(0, save.score + toInt(d.score));
+
+  // 结算那一轮的积分**由系统按等级表发**，模型写的 score 不认（和服务端同规则）。
+  const mStatus = String(d.mission?.status || '');
+  const settlingNow = Boolean(save.phase === 'mission' && save.mission && /结算|完成|结束/.test(mStatus));
+  if (d.score && !settlingNow) save.score = Math.max(0, save.score + toInt(d.score));
   if (d.hp) save.hp = clamp(save.hp + toInt(d.hp), 0, save.maxHp);
   if (d.sta) save.sta = clamp(save.sta + toInt(d.sta), 0, save.maxSta);
   if (d.permanent) {
@@ -319,6 +323,35 @@ function applyDelta(save, d) {
       };
     } else if (d.dungeon === null) save.dungeon = null;
   }
+  // ── 任务的进入与结算 ──
+  // 网页版以前**完全不处理** mission：AI 写「已结算」等于没写，
+  // 玩家进了任务世界就再也出不来（界面也没有结束按钮），等级和积分永远不动。
+  if (d.mission && typeof d.mission === 'object') {
+    const st = String(d.mission.status || '');
+
+    // ① AI 报「进入主神空间」：只有倒计时真的到了才认（否则现实日子会被凭空打断）
+    if (/进入主神空间|主神空间|中转站/.test(st) && save.phase === 'life') {
+      const cd = localCountdown(save);
+      if (cd.minutes === 0) {
+        save.phase = 'hub';
+        save.missionAt = null;
+        events.push('【主神空间】你被拉进了中转站 —— 现实与任务世界之间的那一段灰雾。');
+      } else {
+        events.push(`（还没到时间：现实里${cd.text}，主神现在还不会来叫你）`);
+      }
+    }
+    // ② 结算：必须真的在任务里，且至少跑过一轮
+    else if (/结算|完成|结束/.test(st)) {
+      if (save.phase !== 'mission') {
+        events.push('（不在任务里，没有可结算的东西）');
+      } else if (!localMissionHasRun(save)) {
+        events.push('（任务才刚开始，还不能结算）');
+      } else {
+        events.push(...localEndMission(save, d.mission));
+      }
+    }
+  }
+
   if (d.note) events.push(String(d.note));
 
   if (save.hp <= 0 && save.status === 'alive') {
@@ -2704,6 +2737,7 @@ function localStartMission(s, info = {}) {
     brief: String(info.brief || hook?.hook || '').slice(0, 160),
     rank: String(info.rank || hook?.rank || 'E').toUpperCase().slice(0, 1),
     startedSlot: localMinutes(s),
+    startedTurn: s.turn || 0,      // 结算守卫用：这一趟从第几回合开始
     turnsSeen: 0,
     // 世界书和「这个世界是系统派定的」都靠这两个字段
     work: hook?.work || '',
@@ -2785,7 +2819,26 @@ function localLoreFingerprint(c) {
 const LOCAL_RANKS = ['E', 'D', 'C', 'B', 'A', 'S', 'SS', 'SSS'];
 const LOCAL_RANK_VALUE = { E: 1, D: 2, C: 4, B: 8, A: 16, S: 32, SS: 64, SSS: 128 };
 const LOCAL_RANK_EXP = { E: 3, D: 7, C: 15, B: 31, A: 63, S: 127, SS: 255, SSS: Infinity };
+// 任务积分奖励表（和服务端 ECONOMY.rankReward 一致）
+const LOCAL_RANK_REWARD = {
+  F: 800, E: 2000, D: 5000, C: 11000, B: 24000,
+  A: 56000, S: 128000, SS: 280000, SSS: 600000,
+};
 const localRankIndex = r => Math.max(0, LOCAL_RANKS.indexOf(String(r || 'E').toUpperCase()));
+/** 各种写法（s / SS / "S 级"）归一成等级表里的一档 */
+function localNormRank(v) {
+  const s = String(v || '').toUpperCase().replace(/[^SDCBA]/g, '');
+  if (LOCAL_RANKS.includes(s)) return s;
+  const hit = LOCAL_RANKS.filter(r => r === s || r.startsWith(s)).pop();
+  return hit || 'E';
+}
+/** 这一趟任务是不是已经真的跑过至少一轮（刚开头那一轮不许结算） */
+function localMissionHasRun(s) {
+  if (!s.mission) return false;
+  const started = Number(s.mission.startedTurn);
+  if (Number.isFinite(started)) return (Number(s.turn) || 0) > started;
+  return (s.mission.turnsSeen || 0) >= 1;
+}
 
 function localGainRankExp(s, missionRank, success = true) {
   const out = [];
@@ -2810,9 +2863,10 @@ function localGainRankExp(s, missionRank, success = true) {
   return out;
 }
 
-function localEndMission(s) {
+function localEndMission(s, info = {}) {
   if (s.phase !== 'mission') return [];
   const done = s.mission;
+  const out = [];
   // 和服务端 R.endMission 一致：先回**中转站**，不是直接回现实。
   // 以前这里写的是 'life'，于是网页模式结算完跳过中转站，
   // 玩家既看不到面板、也没法挑下一个世界。
@@ -2822,7 +2876,30 @@ function localEndMission(s) {
   s.missionsDone = (s.missionsDone || 0) + 1;
   s.dungeon = null;
   if (s.status !== 'dead') { s.status = 'alive'; s.hp = s.maxHp; s.sta = s.maxSta; }
-  return localGainRankExp(s, done?.rank, true);
+
+  // ── 积分：按等级表发（和服务端同规则）──
+  // 网页版以前压根不发，全靠模型在状态块里写，结果「隐藏评了 S 只给 D 级的钱」。
+  const rankKey = localNormRank(done?.rank);
+  const hiddenRaw = info?.hiddenRank ?? info?.hidden;
+  const hiddenKey = hiddenRaw ? localNormRank(hiddenRaw) : null;
+  const reasonText = String(info?.hiddenReason || info?.hiddenNote || '').trim();
+  let useKey = rankKey;
+  if (hiddenKey && (LOCAL_RANK_VALUE[hiddenKey] || 0) > (LOCAL_RANK_VALUE[rankKey] || 0)) {
+    // 隐藏评级没写理由 → 砍到「任务等级 +2」，防刷分
+    useKey = reasonText
+      ? hiddenKey
+      : (LOCAL_RANKS[Math.min(localRankIndex(rankKey) + 2, LOCAL_RANKS.length - 1)] || hiddenKey);
+  }
+  const base = LOCAL_RANK_REWARD[useKey] || 200;
+  const mult = (window.GAME_DATA?.difficulties || []).find(x => x.id === s.difficulty)?.scoreMult ?? 1;
+  const reward = Math.round(base * mult);
+  s.score = Math.max(0, (s.score || 0) + reward);
+  if (useKey !== rankKey) {
+    out.push(`【隐藏评定】${useKey} 级${reasonText ? `（${reasonText}）` : ''} —— 按 ${useKey} 级结算，不按 ${rankKey} 级`);
+  }
+  out.push(`【结算奖励】${useKey} 级任务　积分 +${reward}`);
+  out.push(...localGainRankExp(s, done?.rank, true));
+  return out;
 }
 
 /**
@@ -3818,6 +3895,17 @@ const UI = {
         <label>单次回复长度上限（tokens）</label>
         <input type="number" id="cfgMax" value="${c.maxTokens}" min="200" max="8000" step="100" />
       </div>
+      <div class="field">
+        <label>配置码（换设备用）</label>
+        <div class="row2">
+          <button class="btn ghost" id="cfgExport">📋 复制配置码</button>
+          <button class="btn ghost" id="cfgImportGo">📥 粘贴配置码</button>
+        </div>
+        <div class="desc">
+          在已经能用的设备上点「复制配置码」，把那一串发到手机上（QQ / 微信发给自己就行），
+          手机上粘进来点「粘贴配置码」—— <b>不用手打 51 位的 Key</b>。
+        </div>
+      </div>
       <div id="testResult"></div>`;
 
     /* ── 高级 ── */
@@ -4068,6 +4156,53 @@ const UI = {
             box.innerHTML = `<div class="result err">❌ ${esc(err.message)}</div>`;
           }
           e.target.disabled = false;
+        };
+
+        /* ── 配置码：在电脑上导出、手机上导入，省得手打 51 位 Key ── */
+        const PREFIX = 'midcfg1:';
+        const b64enc = str => btoa(String.fromCharCode(...new TextEncoder().encode(str)));
+        const b64dec = b => new TextDecoder().decode(Uint8Array.from(atob(b), ch => ch.charCodeAt(0)));
+
+        const expBtn = ov.querySelector('#cfgExport');
+        if (expBtn) expBtn.onclick = async () => {
+          const cc = collect();
+          const code = PREFIX + b64enc(JSON.stringify({
+            provider: cc.provider || Backend.cfg.provider,
+            baseUrl: cc.baseUrl || Backend.cfg.baseUrl,
+            model: cc.model || Backend.cfg.model,
+            apiKey: cc.apiKey || Backend.cfg.apiKey || '',
+          }));
+          let copied = false;
+          try { await navigator.clipboard.writeText(code); copied = true; } catch { /* 手机可能不让 */ }
+          if (!copied) {
+            // 剪贴板被拦：退回「弹框全选」，让人自己长按复制
+            window.prompt('配置码已生成，长按全选复制：', code);
+          }
+          toast(copied ? '配置码已复制，发到手机上粘贴即可' : '配置码已弹出，长按复制', 'ok');
+        };
+
+        const impBtn = ov.querySelector('#cfgImportGo');
+        if (impBtn) impBtn.onclick = async () => {
+          const raw = window.prompt('把电脑上复制的配置码粘到这里：', '');
+          if (!raw) return;
+          let code = raw.trim();
+          try {
+            if (!code.startsWith(PREFIX)) throw new Error('这串不是配置码（应该以 midcfg1: 开头）');
+            const obj = JSON.parse(b64dec(code.slice(PREFIX.length)));
+            if (!obj.baseUrl || !obj.model) throw new Error('配置码里缺少接口地址或模型名');
+            await Backend.saveConfig({
+              provider: obj.provider || 'custom',
+              baseUrl: obj.baseUrl,
+              model: obj.model,
+              apiKey: obj.apiKey || '',
+            });
+            await Backend.getConfig();
+            applyBranding();
+            toast('配置已导入，可以直接开始', 'ok');
+            redraw();
+          } catch (err) {
+            toast('导入失败：' + err.message, 'err');
+          }
         };
       },
     });
