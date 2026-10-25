@@ -288,10 +288,18 @@ function applyDelta(save, d) {
         events.push(`【记忆】${cur.name}：${text}`);
       }
     }
+    // 现实生活里不记任务：界面右下角会挂一个「📋 任务」，玩家会以为主神又派活了。
+    // （和服务端 R.applyWorldDelta 的规则保持一致）
+    const questAllowed = save.phase !== 'life';
     for (const q of [].concat(d.quests || [])) {
       if (!q?.name) continue;
       let cur = ws.quests.find(x => x.name === q.name);
-      if (!cur) { cur = { name: q.name, type: '支线', objective: '', status: '进行中', reward: '' }; ws.quests.push(cur); events.push(`【新任务】${q.name}`); }
+      if (!cur) {
+        if (!questAllowed) { events.push('（现实里不记任务：想做的事写进正文或 flags 就行）'); continue; }
+        cur = { name: q.name, type: '支线', objective: '', status: '进行中', reward: '' };
+        ws.quests.push(cur);
+        events.push(`【新任务】${q.name}`);
+      }
       if (q.type) cur.type = /主/.test(String(q.type)) ? '主线' : '支线';
       if (q.objective) cur.objective = q.objective;
       if (q.reward) cur.reward = q.reward;
