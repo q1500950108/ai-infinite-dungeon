@@ -2976,8 +2976,12 @@ function localWorldProgressPrompt(save) {
   L.push(`距离下一次主神任务：${localCountdown(save).text}　现金：¥${(save.money ?? 0).toLocaleString()}`);
   if (ws.faction) L.push(`当前站队：${ws.faction}`);
   const qs = ws.quests || [];
-  L.push(`\n任务（${qs.filter(q => q.status === '已完成').length}/${qs.length} 已完成）：`);
-  for (const q of qs) L.push(`　· [${q.type}] ${q.name} —— ${q.status}${q.objective ? `｜目标：${q.objective}` : ''}${q.reward ? `｜报酬：${q.reward}` : ''}`);
+  // 只列进行中的；已完成的只留最后 3 条名字（和服务端 worldProgressBlock 同规则）
+  const openQ = qs.filter(q => q.status === '进行中');
+  L.push(`\n任务（进行中 ${openQ.length} 条，已完成 ${qs.length - openQ.length} 条）：`);
+  for (const q of openQ) L.push(`　· [${q.type}] ${q.name} —— ${q.status}${q.objective ? `｜目标：${q.objective}` : ''}${q.reward ? `｜报酬：${q.reward}` : ''}`);
+  const doneQ = qs.filter(q => q.status !== '进行中').slice(-3);
+  if (doneQ.length) L.push(`　最近结束：${doneQ.map(q => `${q.name}（${q.status}）`).join('、')}`);
   if (!qs.length) L.push('　（暂无）');
   const ns = ws.npcs || [];
   // 跨世界隔离（与服务端 worldProgressBlock 同规则）：
@@ -2990,18 +2994,21 @@ function localWorldProgressPrompt(save) {
     return !(where.includes('任务') || where.includes('·'));
   };
   const reality = ns.filter(isReality), offWorld = ns.filter(n => !isReality(n));
+  // 只留有交集的人（有好感变化或有记忆），并限量 —— 名单太长模型会认错人
+  const meaningful = n => (Number(n.favor) || 0) !== 0 || (n.memories || []).length > 0;
+  const prune = (arr, cap) => arr.filter(meaningful).slice(-cap);
   const fmt = n => `　· ${n.name}（${n.identity || '身份不明'}｜${n.role || '中立'}）好感 ${n.favor > 0 ? '+' : ''}${n.favor || 0}${n.note ? `｜${n.note}` : ''}`;
   if (save.phase === 'mission') {
     const work = save.mission?.work || '';
     const here = offWorld.filter(n => !work || !n.realm || n.realm === work);
     L.push(`\n这个世界的原住民（能见到的人）：`);
-    for (const n of here) L.push(fmt(n));
+    for (const n of prune(here, 12)) L.push(fmt(n));
     if (!here.length) L.push('　（暂无）');
-    if (reality.length) { L.push(`\n现实世界的人（不在这里，也不会出现）：`); for (const n of reality.slice(-8)) L.push(fmt(n)); }
+    if (reality.length) { L.push(`\n现实世界的人（不在这里，也不会出现）：`); for (const n of prune(reality, 6)) L.push(fmt(n)); }
     L.push('\n**跨世界隔离：**除了这个世界的原住民，其他任何人都不该在这一场出场，也不该联系玩家。');
   } else {
     L.push(`\n现实世界认识的人：`);
-    for (const n of reality) L.push(fmt(n));
+    for (const n of prune(reality, 10)) L.push(fmt(n));
     if (!reality.length) L.push('　（暂无）');
     if (offWorld.length) {
       L.push(`\n**别的世界的人（现在联系不上，绝对不该出现）**：`);
@@ -3009,6 +3016,13 @@ function localWorldProgressPrompt(save) {
       L.push('**他们留在自己的世界。**回到现实之后不能给玩家打电话、发消息、出现在楼下，');
       L.push('也不能写成「托人带话」。想再见他们，只能等主神下次把玩家送过去。');
     }
+  }
+  // 认人规则（和服务端 worldProgressBlock 同规则）：
+  // 名单一长模型就会张冠李戴，这里明确「一个名字 = 一个人」。
+  if ([...reality, ...offWorld].some(meaningful)) {
+    L.push('\n**认人规则（写之前对一遍）：**　一个名字只对应一个人，身份、职业、关系都跟着那个名字走。'
+      + '不要把 A 的身份写到 B 头上，不要给同一个人临时换名字或称呼，也不要把两个人的话混成一个人说的。'
+      + '名字不确定就用「那个人」「她」这种指代，别硬编一个名字。');
   }
   return L.join('\n');
 }
