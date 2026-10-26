@@ -2155,19 +2155,16 @@ const Game = {
     }
 
     // ── 中转站里的「出站 / 推门」：玩家在正文里说出来也要算数 ──
-    // 网页模式以前只有界面按钮能换阶段，玩家打字说「我出站回现实」时
-    // 状态还停在 hub —— 顶栏一直显示「主神空间」，看着就像卡死在里面。
-    // 必须在拼提示词**之前**改，这样 AI 拿到的就是新阶段。
+    // 判定走 localHubIntent（和服务端 R.hubIntent 同规则）：
+    // **提到现实 / 回家的一律优先判成「回现实」**，哪怕同一句里还有「推门」。
+    // 踩过的坑：玩家说「推开那扇门，回到现实世界中的别墅」，旧写法会开一个新任务。
     if (this.state.phase === 'hub') {
-      const a = String(action || '');
-      const wantLeave = /出站|回现实|回(?:到)?(?:家|自己的?生活)|离开这|不去了/.test(a)
-        && !/推门|那扇门|进任务/.test(a);
-      const wantDepart = /推门|那扇门|进任务|进那扇门|去(?:那个|这个|下一个|另一个)?世界/.test(a);
-      if (wantLeave) {
+      const intent = localHubIntent(action);
+      if (intent === 'leave') {
         this.state.phase = 'life';
         this.state.missionAt = null;
         this.addSystem('【出站】你回到了现实生活。下一次被主神拉走的时间重新开始数。', 'good');
-      } else if (wantDepart) {
+      } else if (intent === 'depart') {
         const work = this.state.pendingWork || '';
         localStartMission(this.state, {});
         if (work) this.state.mission = { ...(this.state.mission || {}), work };
@@ -2881,6 +2878,20 @@ function localGainRankExp(s, missionRank, success = true) {
   }
   if (s.rankExp > (LOCAL_RANK_EXP[s.rank] ?? Infinity)) s.rankExp = LOCAL_RANK_EXP[s.rank] - 1;
   return out;
+}
+
+/**
+ * 玩家这句话在中转站里是什么意思：'leave' | 'depart' | null
+ * 和服务端 lib/rules.mjs 的 hubIntent 同规则 —— 提到现实/回家的一律优先判成「回现实」。
+ */
+function localHubIntent(action) {
+  const a = String(action || '');
+  if (!a) return null;
+  const toReality = /出站|回现实|回到现实|重返现实|现实世界|回(?:到)?(?:家|自己的?生活|别墅|房间)|离开这|不去了|不推门/.test(a);
+  const toMission = /推门|那扇门|这扇门|进任务|进那扇门|去.{0,4}世界/.test(a);
+  if (toReality) return 'leave';
+  if (toMission) return 'depart';
+  return null;
 }
 
 function localEndMission(s, info = {}) {
