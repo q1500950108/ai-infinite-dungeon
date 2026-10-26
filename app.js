@@ -2320,10 +2320,12 @@ const Game = {
       const fixed = localNormalizeStamp(shown, localClockText(this.state));
       if (fixed !== shown) { shown = fixed; this.messages[this.messages.length - 1].content = fixed; }
     }
-    // 不管哪个阶段，都按真值把 HP / 体力的**分母**改对 ——
-    // 模型会照抄旧的「体力:133/135」，而实际上限早涨到 208 了。
+    // 不管哪个阶段，都按真值把 HP / 体力的**分母**和**积分**改对 ——
+    // 模型会照抄旧的「体力:133/135」，也会在结算后继续写上一轮的积分数字。
     if (shown) {
-      const fixed2 = localNormalizeStamp(shown, '', { maxHp: this.state.maxHp, maxSta: this.state.maxSta });
+      const fixed2 = localNormalizeStamp(shown, '', {
+        maxHp: this.state.maxHp, maxSta: this.state.maxSta, score: this.state.score,
+      });
       if (fixed2 !== shown) { shown = fixed2; this.messages[this.messages.length - 1].content = fixed2; }
     }
 
@@ -2458,7 +2460,14 @@ function localPhasePrompt(save) {
 ${m.brief ? `简报：${m.brief}` : ''}
 **现实世界的时间是停住的。** 玩家现在不在现实世界。写完这个任务的结局后，在状态块里写：
 　"mission":{"status":"已结算"}　—— 系统会先把玩家收回**主神空间**（中转站，HP 与体力回满），
-在那里他还能兑换东西、指定下一次去哪，然后自己出站回现实。**不要直接写他回到了家里。**`;
+在那里他还能兑换东西、指定下一次去哪，然后自己出站回现实。**不要直接写他回到了家里。**
+
+## ⚠ 不要在正文里自己写「任务结算」面板
+结算由系统打印（界面下方会显示真实数值）。你写的那份会两边打架 ——
+实测你写「+10000 / 当前积分 196,120」，系统实际发的是 +11000 / 202,120。
+　✗ 【任务结算中……】【任务奖励：积分+10000】【当前积分：196,120】【评价：S】
+　✓ 你转身往回走，灰雾在心口合拢。
+想给隐藏评定就写进状态块的 mission.hiddenRank（配 hiddenReason），系统会按高的那级发奖。`;
   }
   if (save.phase === 'hub') {
     const free = save.freeWorldPick === true;
@@ -2666,6 +2675,11 @@ function localNormalizeStamp(text, want, limits = {}) {
   }
   if (limits.maxSta > 0) {
     const after = blk.replace(/(体力|耐力|精力|STA)\s*[:：]?\s*(\d+)\s*\/\s*\d+/i, (s, k, cur) => `${k}:${cur}/${limits.maxSta}`);
+    if (after !== blk) { blk = after; changed = true; }
+  }
+  // 积分也按真值覆盖 —— 模型结算后还写上一轮的数字，玩家一对就对不上
+  if (Number.isFinite(limits.score) && limits.score >= 0) {
+    const after = blk.replace(/(积分|分数|SCORE)\s*[:：]?\s*[\d,，]+/i, (s, k) => `${k}:${limits.score}`);
     if (after !== blk) { blk = after; changed = true; }
   }
   return changed ? src.slice(0, m.index) + blk + src.slice(m.index + m[0].length) : src;
