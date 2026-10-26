@@ -3205,8 +3205,16 @@ function renderStateInner(s) {
       qm.classList.remove('empty');
       qm.style.borderColor = 'rgba(255,95,109,.4)';
     } else {
+      // ⚠ 现实生活里**不显示任务牌子**。
+      //   现实不该有「任务」这个概念 —— 模型偶尔还是会往 quests 里写生活琐事，
+      //   界面上出现「📋 周三产检」这种牌子，玩家会以为主神又派活了。
+      //   数据留着（任务面板里还能翻到），但右下角这块只在中转站/任务世界显示。
       const open = (ws.quests || []).filter(q => q.status === '进行中');
-      if (open.length) {
+      if (s.phase === 'life') {
+        qm.textContent = '过着日子。做点什么都行 —— 上班、见人、发呆，或者准备下一次任务。';
+        qm.classList.add('empty');
+        qm.style.borderColor = '';
+      } else if (open.length) {
         qm.innerHTML = `📋 ${esc(open[open.length - 1].name)}`
           + (open.length > 1 ? `　<span style="color:var(--muted);font-size:11px">还有 ${open.length - 1} 个</span>` : '');
         qm.classList.remove('empty');
