@@ -316,6 +316,15 @@ UI.wzApiStep = function () {
       <label style="font-size:12px;color:var(--text-dim)">API Key</label>
       <input type="password" id="wzApiKey" value="${esc(usingOwn ? (c.apiKey || '') : '')}" placeholder="sk-..." style="margin:6px 0 4px" />
       <div class="desc">按接口要求填；不需要就留空。存在这个浏览器的 localStorage 里，不会上传。</div>
+
+      <div class="row2" style="margin-top:10px">
+        <button class="btn ghost" id="wzCfgExport">📋 复制配置码</button>
+        <button class="btn ghost" id="wzCfgImportGo">📥 粘贴配置码</button>
+      </div>
+      <div class="desc">
+        在已经能用的设备上（设置 → API → 复制配置码）导出，把那一串发到这台设备，
+        粘进来点「粘贴配置码」—— <b>不用手打 51 位的 Key</b>。手机上也一样。
+      </div>
       <div id="wzApiTest" style="margin-top:10px"></div>`;
 
   // ── 完整模式 + 服务器已经配好，而且浏览器里没存过自己的 Key：什么都不用做 ──
@@ -860,6 +869,56 @@ UI.wzRender = function () {
     if (base) base.value = def.baseUrl || '';
     if (model) model.value = def.model || '';
   };
+  /* ── 配置码：开局第 0 步也能导出 / 导入 ──
+     以前只有「设置 → API」里有这两个按钮，于是换设备的人卡在建号第一步：
+     手机上没法手打 51 位 Key，又找不到配置码入口。现在这一页直接给。 */
+  const WZ_PREFIX = 'midcfg1:';
+  const wzB64Enc = str => btoa(String.fromCharCode(...new TextEncoder().encode(str)));
+  const wzB64Dec = b => new TextDecoder().decode(Uint8Array.from(atob(b), ch => ch.charCodeAt(0)));
+
+  const wzExp = ov.querySelector('#wzCfgExport');
+  if (wzExp) wzExp.onclick = async () => {
+    const g = id => ov.querySelector('#' + id);
+    const cur = Backend.cfg || {};
+    const code = WZ_PREFIX + wzB64Enc(JSON.stringify({
+      provider: (g('wzApiProvider')?.value) || cur.provider || 'custom',
+      baseUrl: (g('wzApiBase')?.value || '').trim() || cur.baseUrl || '',
+      model: (g('wzApiModel')?.value || '').trim() || cur.model || '',
+      apiKey: (g('wzApiKey')?.value || '') || cur.apiKey || '',
+    }));
+    let copied = false;
+    try { await navigator.clipboard.writeText(code); copied = true; } catch { /* 降级 */ }
+    if (!copied) window.prompt('配置码已生成，长按全选复制：', code);
+    toast(copied ? '配置码已复制，发到另一台设备粘贴即可' : '配置码已弹出，长按复制', 'ok');
+  };
+
+  const wzImp = ov.querySelector('#wzCfgImportGo');
+  if (wzImp) wzImp.onclick = () => {
+    const box = ov.querySelector('#wzApiTest');
+    const raw = window.prompt('把另一台设备上复制的配置码粘到这里：', '');
+    if (raw === null) return;
+    const code = String(raw).trim().replace(/\s+/g, '');
+    try {
+      if (!code.startsWith(WZ_PREFIX)) throw new Error('这串不是配置码（应该以 midcfg1: 开头）');
+      const obj = JSON.parse(wzB64Dec(code.slice(WZ_PREFIX.length)));
+      if (!obj.baseUrl || !obj.model) throw new Error('配置码里缺少接口地址或模型名');
+      const g = id => ov.querySelector('#' + id);
+      if (g('wzApiBase')) g('wzApiBase').value = obj.baseUrl;
+      if (g('wzApiModel')) g('wzApiModel').value = obj.model;
+      if (g('wzApiKey') && obj.apiKey) g('wzApiKey').value = obj.apiKey;
+      const prov = g('wzApiProvider');
+      if (prov && obj.provider && [...prov.options].some(o => o.value === obj.provider)) prov.value = obj.provider;
+      if (box) {
+        box.innerHTML = `<div class="result ok">✅ 已填入：<code>${esc(obj.baseUrl)}</code> · <code>${esc(obj.model)}</code>`
+          + `${obj.apiKey ? `　Key <code>${esc(String(obj.apiKey).slice(0, 8))}…${esc(String(obj.apiKey).slice(-4))}</code>` : ''}`
+          + `<br><span class="desc">点「测试连接」确认一下，再点下一步。</span></div>`;
+      }
+      toast('配置码已填入', 'ok');
+    } catch (err) {
+      if (box) box.innerHTML = `<div class="result err">❌ ${esc(err.message)}</div>`;
+    }
+  };
+
   const apiTest = ov.querySelector('#wzApiTestBtn');
   if (apiTest) apiTest.onclick = async () => {
     const box = ov.querySelector('#wzApiTest');
